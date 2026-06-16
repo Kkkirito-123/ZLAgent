@@ -1,0 +1,33 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sqlalchemy>=2.0.36
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+loguru>=0.7.3
+python-dotenv>=1.0.1
+httpx>=0.28.0
+croniter>=5.0.0
+PyYAML>=6.0
+# Personal WeChat (Weixin) via Tencent iLink — see backend/gateways/weixin.py
+aiohttp>=3.10.0
+cryptography>=43.0.0
+certifi>=2024.8.30
+qrcode>=7.4.2
+# v0.14 — MCP (Model Context Protocol) client. The official Anthropic SDK
+# brings ClientSession + stdio_client + streamable_http_client. We only
+# use the stdio path in v0.14; HTTP is reserved for a later milestone.
+mcp>=1.0.0
+# v0.37.8 — Redis-backed temporary storage (session context turns, travel
+# bundle cache, wiki answers). Uses redis-py's asyncio client. Server
+# itself is optional: ``ZLAGENT_REDIS_URL`` empty → all callers transparently
+# fall back to the existing in-memory + SQLite/JSONL layers.
+redis>=5.0.0
+# v0.37.8 — smoke + unit test fake for redis. Resolves the same asyncio
+# API surface as ``redis.asyncio`` without needing a live server.
+fakeredis[lua]>=2.24.0
+# v0.45.1 — Python CLI behind the @kevinwatt/yt-dlp-mcp npm wrapper.
+# That MCP server only wires JSON-RPC tools onto the yt-dlp binary; if
+# yt-dlp is missing, every download call fails at runtime even though
+# the MCP handshake succeeds. Pinned floor matches youtube's 2024+
+# extractor schema; pip ships frequent patch releases.
+yt-dlp>=2024.10.7

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime data (persisted via docker volumes)
+data/
+config/local.yaml
+workspace/credentials/
+workspace/files/
+workspace/knowledge/
+workspace/knowledge_modes/
+workspace/logs/
+workspace/memory/
+workspace/runtime/
+workspace/tmp/
+workspace/skills/.usage.json
+workspace/.zlagent/
+
+# Build / packaging
+build/
+dist/
+
+# Logs / DB
+*.log
+*.pid
+*.jsonl
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
