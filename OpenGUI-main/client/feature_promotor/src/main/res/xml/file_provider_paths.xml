@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+
+    <external-files-path
+        name="documents"
+        path="Documents/" />
+
+
+    <files-path
+        name="internal_files"
+        path="." />
+</paths>

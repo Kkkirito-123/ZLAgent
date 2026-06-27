@@ -1,0 +1,3 @@
+<resources>
+    <string name="accessibility_service_description">This service performs automated click tasks.</string>
+</resources>

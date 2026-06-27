@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenGUI Bootstrap"
+  short_description: "Run OpenGUI from a plain-language request."
+  default_prompt: "Use this skill to launch OpenGUI from a plain-language user request. The user should not need to understand the setup order, terminal commands, or env var names. Let AI handle checkout validation, dependency checks, bootstrap, env generation, model provider selection, backend startup, Android client build, and adb wiring. Ask the user only for physical phone actions or missing secrets when strictly required."

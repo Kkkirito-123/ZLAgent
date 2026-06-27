@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">automation</string>
+    <string name="auto_accessibility_desc" translatable="false">
+        Enable accessibility permission to save operation time and steps.
+    </string>
+</resources>

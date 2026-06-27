@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">OpenGUI</string>
+    <string name="accessibility_service_label">OpenGUI AI Automation Service (required)</string>
+    <string name="accessibility_service_description">Enable this service to perform automated gestures and screen operations.</string>
+</resources>
