@@ -8,9 +8,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from app import OperatorService  # noqa: E402
-from harness.storage import InMemoryTaskStore  # noqa: E402
-from harness.tasking import (  # noqa: E402
+from re_zlagent.app import OperatorService  # noqa: E402
+from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
+from re_zlagent.harness.tasking import (  # noqa: E402
     AcceptanceCriterion,
     CriterionType,
     TaskContract,

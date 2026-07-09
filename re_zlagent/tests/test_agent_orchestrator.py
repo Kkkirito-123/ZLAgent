@@ -9,16 +9,16 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.agent import (  # noqa: E402
+from re_zlagent.harness.agent import (  # noqa: E402
     AgentOrchestrator,
     AgentPlan,
     AgentRunRequest,
     StaticAgentPlanner,
 )
-from harness.runtime import HarnessRuntime, RuntimeAcceptanceInput, RuntimeToolStep  # noqa: E402
-from harness.storage import InMemoryTaskStore  # noqa: E402
-from harness.tasking import AcceptanceCriterion, CriterionType, TaskContract, TaskRunStatus  # noqa: E402
-from harness.tools import Evidence, Tool, ToolPermission, ToolRegistry, ToolResult  # noqa: E402
+from re_zlagent.harness.runtime import HarnessRuntime, RuntimeAcceptanceInput, RuntimeToolStep  # noqa: E402
+from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
+from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract, TaskRunStatus  # noqa: E402
+from re_zlagent.harness.tools import Evidence, Tool, ToolPermission, ToolRegistry, ToolResult  # noqa: E402
 
 
 class EvidenceTool(Tool):

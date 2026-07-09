@@ -10,11 +10,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness import build_harness_facade  # noqa: E402
-from harness.progress import TaskProgressReader  # noqa: E402
-from harness.skills import FileSystemSkillLoader  # noqa: E402
-from harness.storage import InMemoryTaskStore  # noqa: E402
-from harness.tools import Tool, ToolPermission, ToolRegistry, ToolResult  # noqa: E402
+from re_zlagent.harness import build_harness_facade  # noqa: E402
+from re_zlagent.harness.progress import TaskProgressReader  # noqa: E402
+from re_zlagent.harness.skills import FileSystemSkillLoader  # noqa: E402
+from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
+from re_zlagent.harness.tools import Tool, ToolPermission, ToolRegistry, ToolResult  # noqa: E402
 
 
 class FacadeReadTool(Tool):

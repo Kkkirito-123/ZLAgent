@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-zlagent = "app.cli:main"
+zlagent = "re_zlagent.app.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

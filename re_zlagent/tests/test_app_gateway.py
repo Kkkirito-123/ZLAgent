@@ -8,13 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from app import AgentApplication  # noqa: E402
-from gateway import DeliveryTarget, IncomingMessage  # noqa: E402
-from harness.agent import AgentOrchestrator, AgentPlan, StaticAgentPlanner  # noqa: E402
-from harness.runtime import HarnessRuntime, RuntimeAcceptanceInput  # noqa: E402
-from harness.storage import InMemoryTaskStore  # noqa: E402
-from harness.tasking import AcceptanceCriterion, CriterionType, TaskContract, TaskRunStatus  # noqa: E402
-from harness.tools import ToolRegistry  # noqa: E402
+from re_zlagent.app import AgentApplication  # noqa: E402
+from re_zlagent.gateway import DeliveryTarget, IncomingMessage  # noqa: E402
+from re_zlagent.harness.agent import AgentOrchestrator, AgentPlan, StaticAgentPlanner  # noqa: E402
+from re_zlagent.harness.runtime import HarnessRuntime, RuntimeAcceptanceInput  # noqa: E402
+from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
+from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract, TaskRunStatus  # noqa: E402
+from re_zlagent.harness.tools import ToolRegistry  # noqa: E402
 
 
 class AppGatewayTests(unittest.IsolatedAsyncioTestCase):

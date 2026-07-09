@@ -9,9 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.tools import RecommendedNextAction, ToolErrorType  # noqa: E402
-from harness.tools.builtins import ReadUrlTool, UrlFetchResult  # noqa: E402
-from harness.tools.builtins.url_tools import MAX_URL_BYTES  # noqa: E402
+from re_zlagent.harness.tools import RecommendedNextAction, ToolErrorType  # noqa: E402
+from re_zlagent.harness.tools.builtins import ReadUrlTool, UrlFetchResult  # noqa: E402
+from re_zlagent.harness.tools.builtins.url_tools import MAX_URL_BYTES  # noqa: E402
 
 
 class FakeFetcher:

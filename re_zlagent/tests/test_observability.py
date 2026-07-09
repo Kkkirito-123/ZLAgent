@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.observability import (  # noqa: E402
+from re_zlagent.harness.observability import (  # noqa: E402
     DoctorCheck,
     DoctorRunner,
     DoctorStatus,
@@ -19,9 +19,9 @@ from harness.observability import (  # noqa: E402
     check_harness_facade,
     redact_mapping,
 )
-from harness import build_harness_facade  # noqa: E402
-from harness.storage import InMemoryTaskStore  # noqa: E402
-from harness.tools import ToolRegistry  # noqa: E402
+from re_zlagent.harness import build_harness_facade  # noqa: E402
+from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
+from re_zlagent.harness.tools import ToolRegistry  # noqa: E402
 
 
 class TraceRecorderTests(unittest.TestCase):

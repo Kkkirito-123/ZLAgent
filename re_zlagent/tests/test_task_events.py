@@ -8,8 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.tasking import TaskEventLog, TaskEventType  # noqa: E402
-from harness.tools import Evidence, SideEffect  # noqa: E402
+from re_zlagent.harness.tasking import TaskEventLog, TaskEventType  # noqa: E402
+from re_zlagent.harness.tools import Evidence, SideEffect  # noqa: E402
 
 
 class TaskEventLogTests(unittest.TestCase):

@@ -9,7 +9,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.model import (  # noqa: E402
+from re_zlagent.harness.model import (  # noqa: E402
     ModelClientError,
     ModelMessage,
     OpenAICompatibleModelClient,

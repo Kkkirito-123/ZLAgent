@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.tools import PermissionDecision, PermissionPolicy, Tool, ToolPermission  # noqa: E402
+from re_zlagent.harness.tools import PermissionDecision, PermissionPolicy, Tool, ToolPermission  # noqa: E402
 
 
 class SafeTool(Tool):

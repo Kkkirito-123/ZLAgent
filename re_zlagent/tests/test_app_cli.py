@@ -11,9 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from app.cli import run_cli  # noqa: E402
-from harness.storage import SqliteTaskStore  # noqa: E402
-from harness.tasking import (  # noqa: E402
+from re_zlagent.app.cli import run_cli  # noqa: E402
+from re_zlagent.harness.storage import SqliteTaskStore  # noqa: E402
+from re_zlagent.harness.tasking import (  # noqa: E402
     AcceptanceCriterion,
     CriterionType,
     TaskContract,

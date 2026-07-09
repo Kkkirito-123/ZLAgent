@@ -31,6 +31,7 @@ Default commands:
 ```bash
 python -m unittest discover -s re_zlagent/tests
 python -m compileall re_zlagent/src re_zlagent/tests
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
 ```
 
 Use targeted tests when the change is narrow, but do not claim broad validation from narrow checks.

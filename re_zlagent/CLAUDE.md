@@ -103,7 +103,8 @@ Project structure discipline:
 
 - New capabilities must first fit an existing layer before creating a new directory.
 - Public imports for a module should be exposed from that module's `__init__.py`.
-- Runtime lifecycle controls belong in `src/harness/runtime/` unless they become a cross-process transport concern.
+- Public Python imports must use the `re_zlagent.*` namespace; do not create top-level `app`, `gateway`, or `harness` packages.
+- Runtime lifecycle controls belong in `src/re_zlagent/harness/runtime/` unless they become a cross-process transport concern.
 - Do not create new top-level folders for plans, reports, experiments, or one-off notes unless the user explicitly asks.
 - Tests should mirror the owning module boundary, not the implementation detail that happened to change.
 - Every module should have one clear owner boundary: model, storage, runtime, tasking, tool, app, gateway, or observability.
@@ -113,13 +114,13 @@ Project structure discipline:
 Current landed core:
 
 ```text
-src/gateway/
+src/re_zlagent/gateway/
   DeliveryTarget
   IncomingMessage
   OutgoingMessage
   GatewayAdapter
 
-src/app/
+src/re_zlagent/app/
   AgentApplication
   ApplicationDispatcher
   ApplicationResult
@@ -131,13 +132,13 @@ src/app/
   build_application_container
   run_cli
 
-src/harness/
+src/re_zlagent/harness/
   HarnessFacade
   HarnessInventory
   HarnessRuntimeSnapshot
   build_harness_facade
 
-src/harness/tools/
+src/re_zlagent/harness/tools/
   Tool
   ToolResult
   ToolRegistry
@@ -145,16 +146,16 @@ src/harness/tools/
   PermissionPolicy
   ReadBeforeWritePolicy
 
-src/harness/tools/builtins/
+src/re_zlagent/harness/tools/builtins/
   ReadFileTool
   WriteFileTool
   SendMessageTool
   ReadUrlTool
 
-src/harness/sandbox/
+src/re_zlagent/harness/sandbox/
   WorkspacePathPolicy
 
-src/harness/tasking/
+src/re_zlagent/harness/tasking/
   TaskContract
   TaskRun
   TaskEventLog
@@ -169,14 +170,14 @@ src/harness/tasking/
   StepVerification
   StepVerifier
 
-src/harness/storage/
+src/re_zlagent/harness/storage/
   TaskStore
   InMemoryTaskStore
   SqliteTaskStore
   PostgresTaskStore
   storage serde helpers
 
-src/harness/runtime/
+src/re_zlagent/harness/runtime/
   RunControlAction
   RunControlResult
   RunControlService
@@ -187,7 +188,7 @@ src/harness/runtime/
   HarnessRuntime.resume_from_checkpoint
   HarnessRuntime.resume_with_user_approval
 
-src/harness/agent/
+src/re_zlagent/harness/agent/
   AgentRunRequest
   AgentPlan
   AgentPlanner
@@ -195,13 +196,13 @@ src/harness/agent/
   JsonPlanPlanner
   AgentOrchestrator
 
-src/harness/model/
+src/re_zlagent/harness/model/
   ModelMessage
   ModelResponse
   ModelClient
   OpenAICompatibleModelClient
 
-src/harness/memory/
+src/re_zlagent/harness/memory/
   MemoryEntry
   MemoryKind
   MemorySource
@@ -209,13 +210,13 @@ src/harness/memory/
   InMemoryMemoryStore
   MemoryManager
 
-src/harness/skills/
+src/re_zlagent/harness/skills/
   SkillManifest
   FileSystemSkillLoader
   SkillGuard
   scan_skill_text
 
-src/harness/observability/
+src/re_zlagent/harness/observability/
   TraceSpan
   TraceEvent
   TraceRecorder
@@ -226,14 +227,14 @@ src/harness/observability/
   SupportBundleBuilder
   redact_mapping
 
-src/harness/evals/
+src/re_zlagent/harness/evals/
   EvalScenario
   EvalCaseResult
   EvalSuiteResult
   AgentEvalRunner
   RunHealthMonitor
 
-src/harness/progress/
+src/re_zlagent/harness/progress/
   TaskProgressReader
   TaskProgressSnapshot
 ```
@@ -390,24 +391,24 @@ Stage rules:
 
 Treat these as high-risk:
 
-- `src/gateway/`: inbound/outbound message contracts and adapter boundary.
-- `src/app/`: app-to-harness wiring and user-facing result formatting.
-- `src/app/bootstrap.py`: application assembly, store choice, default tool registration, and planner/model boundary.
-- `src/app/operator.py`: operator-facing status and lifecycle control shape.
-- `src/harness/tools/`: permission, evidence, side effects, and recoverability contracts.
-- `src/harness/tools/builtins/file_tools.py`: filesystem boundary and read-before-write enforcement.
-- `src/harness/sandbox/`: path escape and workspace isolation.
-- `src/harness/tasking/`: completion contract, checkpoint, and recovery rules.
-- `src/harness/storage/`: task persistence semantics and adapter behavior baseline.
-- `src/harness/runtime/`: run lifecycle, control actions, event order, checkpoint anchoring, and acceptance transitions.
-- `src/harness/agent/`: planner boundary and orchestration path into runtime.
-- `src/harness/model/`: model provider boundary and strict response contracts.
-- `src/harness/memory/`: durable memory categories, versioned mutations, prompt-context fencing.
-- `src/harness/skills/`: read-only skill loading, path safety, duplicate detection, static safety scanning.
-- `src/harness/observability/`: trace spans, trace events, metadata redaction, diagnostics foundations.
-- `src/harness/evals/`: benchmark expectations and realtime health snapshots; no completion authority.
-- `src/harness/progress/`: read-only progress snapshots from task runs, events, and checkpoints.
-- `src/harness/facade.py`: read-only capability inventory and runtime component status.
+- `src/re_zlagent/gateway/`: inbound/outbound message contracts and adapter boundary.
+- `src/re_zlagent/app/`: app-to-harness wiring and user-facing result formatting.
+- `src/re_zlagent/app/bootstrap.py`: application assembly, store choice, default tool registration, and planner/model boundary.
+- `src/re_zlagent/app/operator.py`: operator-facing status and lifecycle control shape.
+- `src/re_zlagent/harness/tools/`: permission, evidence, side effects, and recoverability contracts.
+- `src/re_zlagent/harness/tools/builtins/file_tools.py`: filesystem boundary and read-before-write enforcement.
+- `src/re_zlagent/harness/sandbox/`: path escape and workspace isolation.
+- `src/re_zlagent/harness/tasking/`: completion contract, checkpoint, and recovery rules.
+- `src/re_zlagent/harness/storage/`: task persistence semantics and adapter behavior baseline.
+- `src/re_zlagent/harness/runtime/`: run lifecycle, control actions, event order, checkpoint anchoring, and acceptance transitions.
+- `src/re_zlagent/harness/agent/`: planner boundary and orchestration path into runtime.
+- `src/re_zlagent/harness/model/`: model provider boundary and strict response contracts.
+- `src/re_zlagent/harness/memory/`: durable memory categories, versioned mutations, prompt-context fencing.
+- `src/re_zlagent/harness/skills/`: read-only skill loading, path safety, duplicate detection, static safety scanning.
+- `src/re_zlagent/harness/observability/`: trace spans, trace events, metadata redaction, diagnostics foundations.
+- `src/re_zlagent/harness/evals/`: benchmark expectations and realtime health snapshots; no completion authority.
+- `src/re_zlagent/harness/progress/`: read-only progress snapshots from task runs, events, and checkpoints.
+- `src/re_zlagent/harness/facade.py`: read-only capability inventory and runtime component status.
 - PostgreSQL adapter: schema, event append semantics, concurrent update policy.
 - future `gateway/` and `app/`: user-facing side effects and IM/API entry behavior.
 
@@ -420,7 +421,7 @@ Default verification for current code:
 ```bash
 python -m unittest discover -s re_zlagent/tests
 python -m compileall re_zlagent/src re_zlagent/tests
-PYTHONPATH=re_zlagent/src python -m app.cli --help
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
 find re_zlagent -maxdepth 5 -type f | sort
 ```
 
@@ -433,7 +434,7 @@ When touching tools, also verify:
 - read-before-write success and failure paths
 - unsafe path rejection
 - externally visible message tools require confirmation
-- harness tools do not import app or gateway modules
+- harness tools do not import re_zlagent.app or re_zlagent.gateway modules
 - URL tools return freshness evidence and recoverable network errors
 
 When touching tasking, also verify:

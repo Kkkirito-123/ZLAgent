@@ -9,14 +9,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.agent import (  # noqa: E402
+from re_zlagent.harness.agent import (  # noqa: E402
     AgentRunRequest,
     JsonPlanPlanner,
     PlanParseError,
     parse_agent_plan,
 )
-from harness.model import ModelMessage, ModelResponse  # noqa: E402
-from harness.tasking import CriterionType  # noqa: E402
+from re_zlagent.harness.model import ModelMessage, ModelResponse  # noqa: E402
+from re_zlagent.harness.tasking import CriterionType  # noqa: E402
 
 
 class FakeModel:

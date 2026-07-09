@@ -21,22 +21,23 @@ re_zlagent/
 ├── pyproject.toml
 ├── README.md
 ├── src/
-│   ├── app/
-│   ├── gateway/
-│   └── harness/
-│       ├── facade.py
-│       ├── agent/
-│       ├── memory/
-│       ├── model/
-│       ├── observability/
-│       ├── evals/
-│       ├── progress/
-│       ├── runtime/
-│       ├── sandbox/
-│       ├── skills/
-│       ├── storage/
-│       ├── tasking/
-│       └── tools/
+│   └── re_zlagent/
+│       ├── app/
+│       ├── gateway/
+│       └── harness/
+│           ├── facade.py
+│           ├── agent/
+│           ├── memory/
+│           ├── model/
+│           ├── observability/
+│           ├── evals/
+│           ├── progress/
+│           ├── runtime/
+│           ├── sandbox/
+│           ├── skills/
+│           ├── storage/
+│           ├── tasking/
+│           └── tools/
 └── tests/
 ```
 
@@ -268,9 +269,10 @@ Do not delete old source until the capability ledger says every required old cap
 - Model provider adapters are thin transport boundaries; real keys and DSNs belong in app configuration.
 - Freshness timestamps must come from trusted runtime evidence, not model JSON.
 - Gateway/app are thin adapters around the harness, not alternate execution paths.
+- Public imports use the `re_zlagent.*` namespace; do not add top-level `app`, `gateway`, or `harness` packages.
 - Gateway delivery failures are dispatch data, not runtime acceptance decisions.
 - App bootstrap assembles components; it requires an explicit planner or model.
-- App CLI output is always JSON and uses `RunControlService` for run controls.
+- App CLI output is always JSON and uses `OperatorService` for run controls.
 - App bootstrap containers should be closed when they own durable adapters.
 - Durable memory mutations require observed versions.
 - Memory context injected into prompts is fenced and sanitized.
@@ -292,6 +294,7 @@ Run:
 ```bash
 python -m unittest discover -s re_zlagent/tests
 python -m compileall re_zlagent/src re_zlagent/tests
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
 find re_zlagent -maxdepth 5 -type f | sort
 ```
 
@@ -353,7 +356,7 @@ Current tests cover:
 ## Package And CLI Smoke Checks
 
 ```bash
-PYTHONPATH=re_zlagent/src python -m app.cli --help
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
 python -m pip install -e re_zlagent
 zlagent --help
 ```

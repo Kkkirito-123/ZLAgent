@@ -9,11 +9,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from app import ApplicationBootstrapConfig, build_application_container  # noqa: E402
-from gateway import DeliveryTarget, IncomingMessage  # noqa: E402
-from harness.agent import AgentPlan, StaticAgentPlanner  # noqa: E402
-from harness.runtime import RuntimeAcceptanceInput  # noqa: E402
-from harness.tasking import AcceptanceCriterion, CriterionType, TaskContract  # noqa: E402
+from re_zlagent.app import ApplicationBootstrapConfig, build_application_container  # noqa: E402
+from re_zlagent.gateway import DeliveryTarget, IncomingMessage  # noqa: E402
+from re_zlagent.harness.agent import AgentPlan, StaticAgentPlanner  # noqa: E402
+from re_zlagent.harness.runtime import RuntimeAcceptanceInput  # noqa: E402
+from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract  # noqa: E402
 
 
 class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):

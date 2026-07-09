@@ -9,13 +9,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.runtime import (  # noqa: E402
+from re_zlagent.harness.runtime import (  # noqa: E402
     HarnessRuntime,
     RuntimeAcceptanceInput,
     RuntimeToolStep,
 )
-from harness.storage import InMemoryTaskStore  # noqa: E402
-from harness.tasking import (  # noqa: E402
+from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
+from re_zlagent.harness.tasking import (  # noqa: E402
     AcceptanceCriterion,
     AcceptanceStatus,
     FailureDuration,
@@ -27,7 +27,7 @@ from harness.tasking import (  # noqa: E402
     TaskRunStatus,
     StepStatus,
 )
-from harness.tools import (  # noqa: E402
+from re_zlagent.harness.tools import (  # noqa: E402
     Evidence,
     RecommendedNextAction,
     Tool,

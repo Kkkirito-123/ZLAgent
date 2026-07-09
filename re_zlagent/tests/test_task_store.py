@@ -8,8 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.storage import InMemoryTaskStore  # noqa: E402
-from harness.tasking import (  # noqa: E402
+from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
+from re_zlagent.harness.tasking import (  # noqa: E402
     AcceptanceCriterion,
     CheckpointStatus,
     CriterionType,
@@ -21,7 +21,7 @@ from harness.tasking import (  # noqa: E402
     TaskRun,
     TaskRunStatus,
 )
-from harness.tools import Evidence, SideEffect  # noqa: E402
+from re_zlagent.harness.tools import Evidence, SideEffect  # noqa: E402
 
 
 class InMemoryTaskStoreTests(unittest.TestCase):

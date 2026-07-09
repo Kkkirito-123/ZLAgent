@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from harness.skills import (  # noqa: E402
+from re_zlagent.harness.skills import (  # noqa: E402
     FileSystemSkillLoader,
     SkillFormat,
     SkillGuard,
