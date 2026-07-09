@@ -192,6 +192,7 @@ src/re_zlagent/harness/runtime/
   RuntimeResult
   HarnessRuntime
   HarnessRuntime.resume_from_checkpoint
+  HarnessRuntime.resume_with_alternative_tool
   HarnessRuntime.resume_with_user_approval
 
 src/re_zlagent/harness/agent/
@@ -261,6 +262,7 @@ Important semantics:
 - Stage verification failure stops the run before final acceptance and records `step_verification_failed`.
 - Failure envelopes classify perturbations with `visibility`, `duration`, and `perturbation_class`.
 - `resume_with_user_approval` resumes ask-user checkpoints, but approved tool success still requires step verification and final acceptance.
+- `resume_with_alternative_tool` resumes only alternative-tool checkpoints and requires an explicit replacement `RuntimeToolStep`.
 - `AcceptanceGate` can only pass from explicit evidence, tests, approvals, and freshness timestamps.
 - `TaskStore` is the persistence boundary for task contracts, run projections, append-only events, and checkpoints.
 - `InMemoryTaskStore` is the adapter behavior baseline used by tests.
@@ -276,7 +278,7 @@ Important semantics:
 - Approval surfaces must call `HarnessRuntime.resume_with_user_approval` and must not bypass step verification or `AcceptanceGate`.
 - Forked runs keep lineage in metadata and events instead of copying source event history.
 - Runtime resume must be anchored to checkpoint events; retry creates new events and checkpoints instead of overwriting old failure state.
-- Non-retry recovery actions such as ask-user, read-before-write, alternative-tool, and manual-review stop at a visible waiting/failure state.
+- Non-retry recovery actions stop at a visible waiting/failure state unless an explicit recovery entry handles them.
 - Resumed runs must pass `AcceptanceGate`; a successful retry is not completion by itself.
 - `AgentPlanner` produces contracts and runtime steps; it must not execute tools directly.
 - `JsonPlanPlanner` accepts strict JSON plans and validates them into `AgentPlan`.
@@ -351,6 +353,7 @@ failure perturbation classification    implemented and tested
 user approval resume path              implemented and tested
 app operator control surface           implemented and tested
 app approval recovery surface          implemented and tested
+explicit alternative-tool recovery     implemented and tested
 old backend full capability parity     not complete
 old backend deletion                   not allowed yet
 OpenGUI-specific migration             deferred
@@ -392,6 +395,7 @@ Stage rules:
 - M3 closes only minimal core old-backend gaps: read-only tool discovery and user approval resume. Product-specific integrations remain deferred.
 - M4 uses ToolMaze-style failure classes after stage completion has explicit evidence.
 - M5 expresses dependencies, but must not enable default parallel execution.
+- Explicit alternative-tool recovery is allowed only when the caller supplies the replacement step.
 - M6 may parallelize only read-only, dependency-free, side-effect-free nodes.
 - M7 measures reliability; it does not replace `AcceptanceGate`.
 - Old source deletion requires an explicit final approval and a capability-ledger check.
@@ -491,6 +495,7 @@ When touching runtime, also verify:
 - non-retry checkpoints require user/manual handling rather than auto-running
 - resumed tool success still goes through acceptance
 - user-approved confirm resume still goes through step verification and acceptance
+- alternative-tool resume requires explicit replacement step and still goes through step verification and acceptance
 - DAG dependency metadata is validated without enabling parallel execution
 - pause creates a paused checkpoint and a visible paused run projection
 - resume records operator feedback and returns paused/user-blocked runs to running

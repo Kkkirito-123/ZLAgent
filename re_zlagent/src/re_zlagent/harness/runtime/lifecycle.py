@@ -546,6 +546,147 @@ class HarnessRuntime:
             tool_results=[result],
         )
 
+    async def resume_with_alternative_tool(
+        self,
+        *,
+        run_id: str,
+        alternative_step: RuntimeToolStep,
+        checkpoint_id: str | None = None,
+        acceptance: RuntimeAcceptanceInput | None = None,
+        interactive: bool = True,
+    ) -> RuntimeResult:
+        """Resume a checkpoint with an explicit alternative tool step."""
+
+        self._validate_linear_step_dependencies((alternative_step,))
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"unknown run id: {run_id}")
+        contract = self._store.get_contract(run.contract_id)
+        if contract is None:
+            raise ValueError(f"unknown contract id: {run.contract_id}")
+        checkpoint = (
+            self._store.get_checkpoint(checkpoint_id)
+            if checkpoint_id is not None
+            else self._store.latest_checkpoint(run_id)
+        )
+        if checkpoint is None:
+            raise ValueError(f"run has no checkpoint: {run_id}")
+        if checkpoint.run_id != run_id:
+            raise ValueError("checkpoint does not belong to run")
+        failure = checkpoint.failure
+        if failure is None:
+            raise ValueError("checkpoint has no failure envelope")
+        if failure.recommended_action is not RecoveryAction.USE_ALTERNATIVE_TOOL:
+            raise ValueError("checkpoint is not waiting for alternative tool")
+
+        source_event = self._resume_source_event(run_id, checkpoint)
+        plan_step = alternative_step.to_plan_step()
+        self._set_status(run_id, TaskRunStatus.RUNNING, checkpoint_id=checkpoint.id)
+        self._append_step_started(
+            run_id,
+            plan_step,
+            payload={
+                "alternative": {
+                    "checkpoint_id": checkpoint.id,
+                    "source_event_id": source_event.id,
+                    "failed_step": failure.failed_step,
+                    "replacement_for_tool": failure.metadata.get("tool_name"),
+                },
+            },
+        )
+        result = await self._tools.execute(
+            alternative_step.tool_name,
+            alternative_step.arguments,
+            interactive=interactive,
+            allow_confirm=alternative_step.allow_confirm,
+        )
+        tool_event = self._append_event(
+            run_id=run_id,
+            type=TaskEventType.TOOL_RESULT_RECORDED,
+            payload={
+                "step_id": alternative_step.id,
+                "tool_name": alternative_step.tool_name,
+                "tool_arguments": dict(alternative_step.arguments),
+                "step": self._plan_step_payload(plan_step),
+                "result": result.to_metadata(),
+                "content": result.content,
+                "error": result.error,
+                "alternative": {
+                    "checkpoint_id": checkpoint.id,
+                    "source_event_id": source_event.id,
+                    "failed_step": failure.failed_step,
+                    "replacement_for_tool": failure.metadata.get("tool_name"),
+                },
+            },
+            evidence=result.evidence,
+            side_effects=result.side_effects,
+            idempotency_key=f"alternative:{checkpoint.id}:tool:{alternative_step.id}",
+        )
+        if not result.ok:
+            new_failure = self._recovery_policy.recommend_from_tool_result(
+                tool_name=alternative_step.tool_name,
+                result=result,
+                failed_step=alternative_step.id,
+            )
+            new_checkpoint = self._create_checkpoint(
+                run_id=run_id,
+                status=self._checkpoint_status_for_run(new_failure.status),
+                state={
+                    "failed_step_id": alternative_step.id,
+                    "tool_name": alternative_step.tool_name,
+                    "alternative_of_checkpoint_id": checkpoint.id,
+                },
+                resume_from_event_id=tool_event.id,
+                failure=new_failure,
+            )
+            self._append_step_verified(
+                run_id,
+                self._step_verification_from_failure(
+                    plan_step=plan_step,
+                    failure=new_failure,
+                    result=result,
+                    checkpoint_id=new_checkpoint.id,
+                ),
+                plan_step=plan_step,
+            )
+            self._set_status(
+                run_id,
+                new_failure.status,
+                checkpoint_id=new_checkpoint.id,
+            )
+            self._append_terminal_failure_event(run_id, new_failure)
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[result],
+                failure=new_failure,
+            )
+
+        step_failure = self._verify_successful_step(
+            run_id=run_id,
+            step=alternative_step,
+            result=result,
+            tool_event=tool_event,
+            checkpoint_state={
+                "completed_step_id": alternative_step.id,
+                "tool_name": alternative_step.tool_name,
+                "alternative_of_checkpoint_id": checkpoint.id,
+            },
+        )
+        if step_failure is not None:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[result],
+                failure=step_failure,
+            )
+        return self._finish_acceptance(
+            run_id=run_id,
+            contract=contract,
+            acceptance=acceptance or RuntimeAcceptanceInput(),
+            tool_results=[result],
+        )
+
     async def resume_with_user_approval(
         self,
         *,

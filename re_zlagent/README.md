@@ -138,6 +138,7 @@ Runtime:
 - `RuntimeResult`
 - `HarnessRuntime`
 - `HarnessRuntime.resume_from_checkpoint`
+- `HarnessRuntime.resume_with_alternative_tool`
 - `HarnessRuntime.resume_with_user_approval`
 
 Agent orchestration:
@@ -209,6 +210,7 @@ failure perturbation classification    implemented and tested
 user approval resume path              implemented and tested
 app operator control surface           implemented and tested
 app approval recovery surface          implemented and tested
+explicit alternative-tool recovery     implemented and tested
 old backend full capability parity     not complete
 old backend deletion                   not allowed yet
 OpenGUI-specific migration             deferred
@@ -261,8 +263,9 @@ Do not delete old source until the capability ledger says every required old cap
 - Failure envelopes classify perturbations by visibility and duration, such as `explicit_transient` and `implicit_permanent`.
 - Recoverable retry checkpoints can resume through `HarnessRuntime.resume_from_checkpoint`.
 - Ask-user checkpoints can resume through `HarnessRuntime.resume_with_user_approval`, then must pass step verification and acceptance again.
+- Alternative-tool checkpoints can resume only through an explicit alternative `RuntimeToolStep`.
 - Resume creates new events/checkpoints and preserves the original failure trace.
-- Non-retry recovery actions stop for user input, read-before-write, alternative tooling, or manual review.
+- Non-retry recovery actions stop for user input, read-before-write, alternative tooling, or manual review unless an explicit recovery entry handles them.
 - A resumed run is not complete until `AcceptanceGate` passes again.
 - Operator controls go through `RunControlService`, not ad hoc store updates.
 - App/operator surfaces use `OperatorService` for status, pause, resume, cancel, and fork.
@@ -358,7 +361,7 @@ Current tests cover:
 - live PostgreSQL DSN/config integration
 - production model provider config and secrets management
 - persistent benchmark corpus
-- automatic replan or alternative-tool recovery
+- automatic replan
 - product-level confirmation adapters and live IM/API approval flow
 - OpenGUI integration
 - MCP / cron / scheduled jobs migration

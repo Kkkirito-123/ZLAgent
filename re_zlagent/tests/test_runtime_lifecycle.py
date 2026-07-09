@@ -72,6 +72,21 @@ class FailingTool(Tool):
         )
 
 
+class NeedsAlternativeTool(Tool):
+    name = "needs_alternative"
+    description = "Fail with explicit alternative-tool guidance."
+    permission = ToolPermission.SAFE
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        return ToolResult.failure(
+            "primary tool unavailable",
+            error_type=ToolErrorType.EXTERNAL_UNAVAILABLE,
+            recoverable_by_model=True,
+            recommended_next_action=RecommendedNextAction.USE_ALTERNATIVE_TOOL,
+            source=self.name,
+        )
+
+
 class FailOnceTool(Tool):
     name = "fail_once"
     description = "Fail once with retry guidance, then return evidence."
@@ -149,6 +164,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry()
         registry.register(EchoTool())
         registry.register(FailingTool())
+        registry.register(NeedsAlternativeTool())
         registry.register(FailOnceTool())
         registry.register(ConfirmTool())
         return HarnessRuntime(store=store, tools=registry), store
@@ -267,6 +283,102 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             tool_events[-1].payload["resume"]["source_event_id"],
             tool_events[0].id,
         )
+
+    async def test_resume_with_alternative_tool_can_complete(self) -> None:
+        runtime, store = self._runtime()
+
+        first = await runtime.run(
+            contract=self._contract(
+                AcceptanceCriterion(
+                    id="alternative-evidence",
+                    description="alternative evidence exists",
+                    type=CriterionType.TOOL_EVIDENCE,
+                    evidence_refs=("tool:alternative",),
+                )
+            ),
+            run_id="run-1",
+            steps=[
+                RuntimeToolStep(
+                    id="step-1",
+                    tool_name="needs_alternative",
+                )
+            ],
+        )
+        self.assertEqual(first.run.status, TaskRunStatus.RECOVERING)
+
+        resumed = await runtime.resume_with_alternative_tool(
+            run_id="run-1",
+            alternative_step=RuntimeToolStep(
+                id="alt-step",
+                tool_name="echo",
+                arguments={"ref": "tool:alternative"},
+                required_evidence_refs=("tool:alternative",),
+            ),
+        )
+
+        self.assertTrue(resumed.accepted)
+        self.assertEqual(resumed.run.status, TaskRunStatus.COMPLETED)
+        self.assertEqual(store.latest_checkpoint("run-1").status.value, "completed")
+        self.assertEqual(resumed.step_verifications[-1].step_id, "alt-step")
+        self.assertEqual(resumed.step_verifications[-1].status, StepStatus.PASSED)
+        tool_events = [
+            event
+            for event in resumed.events
+            if event.type is TaskEventType.TOOL_RESULT_RECORDED
+        ]
+        self.assertIn("alternative", tool_events[-1].payload)
+        self.assertEqual(
+            tool_events[-1].payload["alternative"]["failed_step"],
+            "step-1",
+        )
+
+    async def test_alternative_resume_rejects_non_alternative_checkpoint(self) -> None:
+        runtime, _ = self._runtime()
+
+        await runtime.run(
+            contract=self._contract(),
+            run_id="run-1",
+            steps=[RuntimeToolStep(id="step-1", tool_name="fail")],
+        )
+
+        with self.assertRaises(ValueError) as context:
+            await runtime.resume_with_alternative_tool(
+                run_id="run-1",
+                alternative_step=RuntimeToolStep(
+                    id="alt-step",
+                    tool_name="echo",
+                ),
+            )
+
+        self.assertIn("not waiting for alternative tool", str(context.exception))
+
+    async def test_alternative_resume_failure_creates_checkpoint(self) -> None:
+        runtime, store = self._runtime()
+
+        await runtime.run(
+            contract=self._contract(),
+            run_id="run-1",
+            steps=[RuntimeToolStep(id="step-1", tool_name="needs_alternative")],
+        )
+        source_checkpoint = store.latest_checkpoint("run-1")
+
+        result = await runtime.resume_with_alternative_tool(
+            run_id="run-1",
+            alternative_step=RuntimeToolStep(
+                id="alt-step",
+                tool_name="fail",
+            ),
+        )
+        latest = store.latest_checkpoint("run-1")
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.run.status, TaskRunStatus.RECOVERING)
+        self.assertEqual(result.failure.failed_step, "alt-step")
+        self.assertEqual(
+            latest.state["alternative_of_checkpoint_id"],
+            source_checkpoint.id,
+        )
+        self.assertEqual(latest.failure.recommended_action.value, "retry")
 
     async def test_resume_requires_existing_checkpoint(self) -> None:
         runtime, store = self._runtime()
