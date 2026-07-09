@@ -22,6 +22,7 @@ re_zlagent/
 ├── README.md
 ├── src/
 │   └── re_zlagent/
+│       ├── check.py
 │       ├── app/
 │       ├── gateway/
 │       └── harness/
@@ -62,6 +63,11 @@ App:
 - `OperatorResponse`
 - `build_application_container`
 - `run_cli`
+
+Local check:
+
+- `python -m re_zlagent.check`
+- `re-zlagent-check`
 
 Harness facade:
 
@@ -292,6 +298,7 @@ Do not delete old source until the capability ledger says every required old cap
 Run:
 
 ```bash
+PYTHONPATH=re_zlagent/src python -m re_zlagent.check --skip-package
 python -m unittest discover -s re_zlagent/tests
 python -m compileall re_zlagent/src re_zlagent/tests
 PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
@@ -339,6 +346,7 @@ Current tests cover:
 - eval scenario runner and realtime health monitor
 - task progress reader
 - harness facade inventory and runtime snapshot
+- local check command orchestration
 
 ## Not Implemented Yet
 
@@ -357,6 +365,8 @@ Current tests cover:
 
 ```bash
 PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
+PYTHONPATH=re_zlagent/src python -m re_zlagent.check --skip-package
 python -m pip install -e re_zlagent
 zlagent --help
+re-zlagent-check --skip-package
 ```

@@ -114,6 +114,10 @@ Project structure discipline:
 Current landed core:
 
 ```text
+src/re_zlagent/check.py
+  run_checks
+  CheckReport
+
 src/re_zlagent/gateway/
   DeliveryTarget
   IncomingMessage
@@ -419,6 +423,7 @@ Protocol changes that cross layers require tests on both sides of the boundary.
 Default verification for current code:
 
 ```bash
+PYTHONPATH=re_zlagent/src python -m re_zlagent.check --skip-package
 python -m unittest discover -s re_zlagent/tests
 python -m compileall re_zlagent/src re_zlagent/tests
 PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
@@ -574,6 +579,13 @@ When touching app/gateway, also verify:
 - operator service returns serializable status and run-control responses
 - operator service keeps status reads non-mutating
 - app CLI returns JSON for status, accepted control actions, rejected control actions, and argument errors
+
+When touching local verification, also verify:
+
+- check command reports structured JSON
+- check command injects `src` into `PYTHONPATH`
+- check command can skip package metadata validation for quick local runs
+- check command cleans generated Python cache and egg-info artifacts by default
 
 ## 8. Reference Policy
 

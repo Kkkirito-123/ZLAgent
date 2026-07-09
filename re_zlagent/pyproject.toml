@@ -11,6 +11,7 @@ dependencies = []
 
 [project.scripts]
 zlagent = "re_zlagent.app.cli:main"
+re-zlagent-check = "re_zlagent.check:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
