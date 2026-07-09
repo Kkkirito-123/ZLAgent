@@ -7,6 +7,7 @@ from .bootstrap import (
     build_application_container,
 )
 from .dispatcher import ApplicationDispatcher, DispatchResult
+from .operator import OperatorResponse, OperatorService, control_result_to_dict
 
 
 def __getattr__(name: str):
@@ -23,7 +24,10 @@ __all__ = [
     "ApplicationDispatcher",
     "ApplicationResult",
     "DispatchResult",
+    "OperatorResponse",
+    "OperatorService",
     "build_parser",
     "build_application_container",
+    "control_result_to_dict",
     "run_cli",
 ]

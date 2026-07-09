@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "re-zlagent"
+version = "0.1.0"
+description = "Rebuilt ZLAgent harness with bounded tools, task checkpoints, and operator controls."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+zlagent = "app.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

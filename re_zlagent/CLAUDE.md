@@ -126,6 +126,8 @@ src/app/
   DispatchResult
   ApplicationBootstrapConfig
   ApplicationContainer
+  OperatorService
+  OperatorResponse
   build_application_container
   run_cli
 
@@ -261,6 +263,8 @@ Important semantics:
 - Runtime execution must flow through `TaskStore`, `ToolRegistry`, checkpoints, and `AcceptanceGate`.
 - Operator controls such as pause, resume with feedback, cancel, and fork must go through `RunControlService`.
 - Run controls mutate only the run projection and append lifecycle events/checkpoints; they must not execute tools or decide acceptance.
+- `OperatorService` is the app-level reusable boundary for status, pause, resume, cancel, and fork.
+- Operator surfaces must return structured data and must not infer task completion.
 - Forked runs keep lineage in metadata and events instead of copying source event history.
 - Runtime resume must be anchored to checkpoint events; retry creates new events and checkpoints instead of overwriting old failure state.
 - Non-retry recovery actions such as ask-user, read-before-write, alternative-tool, and manual-review stop at a visible waiting/failure state.
@@ -274,7 +278,7 @@ Important semantics:
 - `AgentApplication` maps gateway messages into agent requests and formats results; it does not execute tools or decide acceptance.
 - `ApplicationDispatcher` sends app output through a `GatewayAdapter`; delivery failures are returned as data.
 - `build_application_container` assembles store, tools, runtime, planner, orchestrator, app, progress reader, and facade.
-- `run_cli` is an app/operator surface. It must output JSON and route run controls through `RunControlService`.
+- `run_cli` is an app/operator surface. It must output JSON through `OperatorService`.
 - App bootstrap requires an explicit planner or model; it must not silently pretend an LLM exists.
 - `ApplicationContainer.close()` closes owned adapters that expose a `close` method.
 - `MemoryStore` owns versioned durable memory entries.
@@ -336,6 +340,7 @@ linear stage-completion model          implemented and tested
 DAG expression model                   implemented and tested
 failure perturbation classification    implemented and tested
 user approval resume path              implemented and tested
+app operator control surface           implemented and tested
 old backend full capability parity     not complete
 old backend deletion                   not allowed yet
 OpenGUI-specific migration             deferred
@@ -349,7 +354,7 @@ Capability ledger:
 | tool registry / permission | replaced | Use the new structured `ToolResult` and permission metadata. |
 | checkpoints / recovery | replaced | Keep the new checkpoint and resume semantics. |
 | task store / sqlite / postgres | replaced | Use `TaskStore` semantics as the source of truth. |
-| app / gateway message boundary | foundation implemented | Add concrete IM/API adapters later. |
+| app / gateway message boundary | foundation implemented | Use `AgentApplication` and `OperatorService` as app boundaries; add concrete IM/API adapters later. |
 | memory | partially replaced | Keep minimal versioned memory now; old curator/review flows are deferred. |
 | skills | partially replaced | Keep read-only loader and guard now; old `skill_manage` flows are deferred. |
 | MCP | not migrated | Migrate as a separate approved stage. |
@@ -357,7 +362,7 @@ Capability ledger:
 | OpenGUI tool | not migrated | Defer while `re_zlagent` remains harness-first. |
 | wiki / graph-rag / geo | not migrated | Defer as knowledge-system work. |
 | FastAPI API layer | not migrated | Build after the app/harness boundary is stable. |
-| confirmations | partially replaced | Confirm-tier semantics exist; full user approval resume flow is still pending. |
+| confirmations | partially replaced | Confirm-tier semantics and user approval resume exist; concrete product confirmation adapters are deferred. |
 
 Execution order:
 
@@ -388,6 +393,7 @@ Treat these as high-risk:
 - `src/gateway/`: inbound/outbound message contracts and adapter boundary.
 - `src/app/`: app-to-harness wiring and user-facing result formatting.
 - `src/app/bootstrap.py`: application assembly, store choice, default tool registration, and planner/model boundary.
+- `src/app/operator.py`: operator-facing status and lifecycle control shape.
 - `src/harness/tools/`: permission, evidence, side effects, and recoverability contracts.
 - `src/harness/tools/builtins/file_tools.py`: filesystem boundary and read-before-write enforcement.
 - `src/harness/sandbox/`: path escape and workspace isolation.
@@ -414,6 +420,7 @@ Default verification for current code:
 ```bash
 python -m unittest discover -s re_zlagent/tests
 python -m compileall re_zlagent/src re_zlagent/tests
+PYTHONPATH=re_zlagent/src python -m app.cli --help
 find re_zlagent -maxdepth 5 -type f | sort
 ```
 
@@ -563,6 +570,8 @@ When touching app/gateway, also verify:
 - app does not decide acceptance outside runtime result
 - app dispatcher sends through `GatewayAdapter` and reports delivery failures as data
 - outgoing messages carry run status metadata
+- operator service returns serializable status and run-control responses
+- operator service keeps status reads non-mutating
 - app CLI returns JSON for status, accepted control actions, rejected control actions, and argument errors
 
 ## 8. Reference Policy

@@ -8,10 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence, TextIO
 
-from harness.progress import ProgressStatus, TaskProgressReader
-from harness.runtime import RunControlResult, RunControlService
 from harness.storage import SqliteTaskStore
-from harness.storage.serde import checkpoint_to_dict, event_to_dict, run_to_dict
+
+from .operator import OperatorResponse, OperatorService
 
 
 class CliArgumentError(ValueError):
@@ -130,42 +129,29 @@ def _run_with_store(args: argparse.Namespace, sqlite_path: Path, stdout: TextIO)
     try:
         pretty = bool(getattr(args, "pretty", False))
         command = str(args.command)
+        operator = OperatorService(store)
         if command == "status":
-            snapshot = TaskProgressReader(store).snapshot(args.run_id)
-            ok = snapshot.status is not ProgressStatus.MISSING
-            _write_json(
-                {
-                    "ok": ok,
-                    "command": command,
-                    "run_id": args.run_id,
-                    "progress": snapshot.to_dict(),
-                },
-                stdout=stdout,
-                pretty=pretty,
-            )
-            return 0 if ok else 1
-
-        control = RunControlService(store)
-        if command == "pause":
-            result = control.pause(
+            response = operator.status(args.run_id)
+        elif command == "pause":
+            response = operator.pause(
                 args.run_id,
                 reason=args.reason,
                 actor=args.actor,
             )
         elif command == "resume":
-            result = control.resume(
+            response = operator.resume(
                 args.run_id,
                 feedback=args.feedback,
                 actor=args.actor,
             )
         elif command == "cancel":
-            result = control.cancel(
+            response = operator.cancel(
                 args.run_id,
                 reason=args.reason,
                 actor=args.actor,
             )
         elif command == "fork":
-            result = control.fork(
+            response = operator.fork(
                 args.run_id,
                 new_run_id=args.new_run_id,
                 reason=args.reason,
@@ -175,39 +161,18 @@ def _run_with_store(args: argparse.Namespace, sqlite_path: Path, stdout: TextIO)
         else:
             raise CliArgumentError(f"unknown command: {command}")
 
-        _write_json(
-            {
-                "ok": result.accepted,
-                "command": command,
-                "result": _control_result_to_dict(result),
-            },
-            stdout=stdout,
-            pretty=pretty,
-        )
-        return 0 if result.accepted else 2
+        _write_json(response.to_dict(), stdout=stdout, pretty=pretty)
+        return _exit_code(response)
     finally:
         store.close()
 
 
-def _control_result_to_dict(result: RunControlResult) -> dict[str, Any]:
-    return {
-        "accepted": result.accepted,
-        "action": result.action.value,
-        "reason": result.reason,
-        "run": run_to_dict(result.run),
-        "event": event_to_dict(result.event) if result.event else None,
-        "checkpoint": (
-            checkpoint_to_dict(result.checkpoint)
-            if result.checkpoint
-            else None
-        ),
-        "forked_run": (
-            run_to_dict(result.forked_run)
-            if result.forked_run
-            else None
-        ),
-        "metadata": dict(result.metadata),
-    }
+def _exit_code(response: OperatorResponse) -> int:
+    if response.ok:
+        return 0
+    if response.command == "status":
+        return 1
+    return 2
 
 
 def _write_json(data: dict[str, Any], *, stdout: TextIO, pretty: bool) -> None:

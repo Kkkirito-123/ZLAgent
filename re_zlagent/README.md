@@ -18,6 +18,7 @@ re_zlagent/
 ├── AGENTS.md
 ├── CLAUDE.md
 ├── CONTRIBUTING.md
+├── pyproject.toml
 ├── README.md
 ├── src/
 │   ├── app/
@@ -56,6 +57,8 @@ App:
 - `DispatchResult`
 - `ApplicationBootstrapConfig`
 - `ApplicationContainer`
+- `OperatorService`
+- `OperatorResponse`
 - `build_application_container`
 - `run_cli`
 
@@ -195,6 +198,7 @@ linear stage-completion model          implemented and tested
 DAG expression model                   implemented and tested
 failure perturbation classification    implemented and tested
 user approval resume path              implemented and tested
+app operator control surface           implemented and tested
 old backend full capability parity     not complete
 old backend deletion                   not allowed yet
 OpenGUI-specific migration             deferred
@@ -208,7 +212,7 @@ Capability ledger:
 | tool registry / permission | replaced | Use the new structured `ToolResult` and permission metadata. |
 | checkpoints / recovery | replaced | Keep the new checkpoint and resume semantics. |
 | task store / sqlite / postgres | replaced | Use `TaskStore` semantics as the source of truth. |
-| app / gateway message boundary | foundation implemented | Add concrete IM/API adapters later. |
+| app / gateway message boundary | foundation implemented | Use `AgentApplication` and `OperatorService` as app boundaries; add concrete IM/API adapters later. |
 | memory | partially replaced | Keep minimal versioned memory now; old curator/review flows are deferred. |
 | skills | partially replaced | Keep read-only loader and guard now; old `skill_manage` flows are deferred. |
 | MCP | not migrated | Migrate as a separate approved stage. |
@@ -216,7 +220,7 @@ Capability ledger:
 | OpenGUI tool | not migrated | Defer while `re_zlagent` remains harness-first. |
 | wiki / graph-rag / geo | not migrated | Defer as knowledge-system work. |
 | FastAPI API layer | not migrated | Build after the app/harness boundary is stable. |
-| confirmations | partially replaced | Confirm-tier semantics exist; full user approval resume flow is still pending. |
+| confirmations | partially replaced | Confirm-tier semantics and user approval resume exist; concrete product confirmation adapters are deferred. |
 
 Closure stages:
 
@@ -251,6 +255,7 @@ Do not delete old source until the capability ledger says every required old cap
 - Non-retry recovery actions stop for user input, read-before-write, alternative tooling, or manual review.
 - A resumed run is not complete until `AcceptanceGate` passes again.
 - Operator controls go through `RunControlService`, not ad hoc store updates.
+- App/operator surfaces use `OperatorService` for status, pause, resume, cancel, and fork.
 - Pause, resume, cancel, and fork are append-only lifecycle actions with visible events.
 - Fork creates a new run with source lineage metadata; it does not copy old event history.
 - Task history should be append-only; current run status is only a projection.
@@ -295,6 +300,7 @@ Current tests cover:
 - gateway message models
 - app application service
 - app bootstrap container
+- app operator service
 - app JSON CLI
 - app dispatcher
 - tool result metadata
@@ -336,5 +342,18 @@ Current tests cover:
 - live PostgreSQL DSN/config integration
 - production model provider config and secrets management
 - persistent benchmark corpus
-- automatic replan, alternative-tool, or human-approval resume flow
+- automatic replan or alternative-tool recovery
+- product-level confirmation adapters and live IM/API approval flow
 - OpenGUI integration
+- MCP / cron / scheduled jobs migration
+- wiki / graph-rag / geo knowledge systems
+- safe concurrent DAG execution
+- old backend deletion
+
+## Package And CLI Smoke Checks
+
+```bash
+PYTHONPATH=re_zlagent/src python -m app.cli --help
+python -m pip install -e re_zlagent
+zlagent --help
+```
