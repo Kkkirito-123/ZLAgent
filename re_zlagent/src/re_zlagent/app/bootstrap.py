@@ -15,6 +15,7 @@ from re_zlagent.harness.tools import ToolRegistry
 from re_zlagent.harness.tools.builtins import create_file_tools
 
 from .application import AgentApplication
+from .operator import ApprovalService, OperatorService
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,8 @@ class ApplicationContainer:
     store: TaskStore
     tools: ToolRegistry
     planner: AgentPlanner
+    operator: OperatorService
+    approvals: ApprovalService
 
     def close(self) -> None:
         """Close owned resources when adapters expose a close method."""
@@ -73,6 +76,8 @@ def build_application_container(
     runtime = HarnessRuntime(store=resolved_store, tools=tools)
     orchestrator = AgentOrchestrator(planner=resolved_planner, runtime=runtime)
     app = AgentApplication(orchestrator=orchestrator)
+    operator = OperatorService(resolved_store)
+    approvals = ApprovalService(runtime)
     progress_reader = TaskProgressReader(resolved_store)
     facade = build_harness_facade(
         tool_registry=tools,
@@ -87,6 +92,8 @@ def build_application_container(
         store=resolved_store,
         tools=tools,
         planner=resolved_planner,
+        operator=operator,
+        approvals=approvals,
     )
 
 

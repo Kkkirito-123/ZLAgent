@@ -133,6 +133,8 @@ src/re_zlagent/app/
   ApplicationContainer
   OperatorService
   OperatorResponse
+  ApprovalService
+  ApprovalResponse
   build_application_container
   run_cli
 
@@ -270,6 +272,8 @@ Important semantics:
 - Run controls mutate only the run projection and append lifecycle events/checkpoints; they must not execute tools or decide acceptance.
 - `OperatorService` is the app-level reusable boundary for status, pause, resume, cancel, and fork.
 - Operator surfaces must return structured data and must not infer task completion.
+- `ApprovalService` is the app-level reusable boundary for explicit user approval recovery.
+- Approval surfaces must call `HarnessRuntime.resume_with_user_approval` and must not bypass step verification or `AcceptanceGate`.
 - Forked runs keep lineage in metadata and events instead of copying source event history.
 - Runtime resume must be anchored to checkpoint events; retry creates new events and checkpoints instead of overwriting old failure state.
 - Non-retry recovery actions such as ask-user, read-before-write, alternative-tool, and manual-review stop at a visible waiting/failure state.
@@ -282,7 +286,7 @@ Important semantics:
 - `GatewayAdapter` only sends normalized outbound messages.
 - `AgentApplication` maps gateway messages into agent requests and formats results; it does not execute tools or decide acceptance.
 - `ApplicationDispatcher` sends app output through a `GatewayAdapter`; delivery failures are returned as data.
-- `build_application_container` assembles store, tools, runtime, planner, orchestrator, app, progress reader, and facade.
+- `build_application_container` assembles store, tools, runtime, planner, orchestrator, app, operator, approvals, progress reader, and facade.
 - `run_cli` is an app/operator surface. It must output JSON through `OperatorService`.
 - App bootstrap requires an explicit planner or model; it must not silently pretend an LLM exists.
 - `ApplicationContainer.close()` closes owned adapters that expose a `close` method.
@@ -346,6 +350,7 @@ DAG expression model                   implemented and tested
 failure perturbation classification    implemented and tested
 user approval resume path              implemented and tested
 app operator control surface           implemented and tested
+app approval recovery surface          implemented and tested
 old backend full capability parity     not complete
 old backend deletion                   not allowed yet
 OpenGUI-specific migration             deferred
@@ -367,7 +372,7 @@ Capability ledger:
 | OpenGUI tool | not migrated | Defer while `re_zlagent` remains harness-first. |
 | wiki / graph-rag / geo | not migrated | Defer as knowledge-system work. |
 | FastAPI API layer | not migrated | Build after the app/harness boundary is stable. |
-| confirmations | partially replaced | Confirm-tier semantics and user approval resume exist; concrete product confirmation adapters are deferred. |
+| confirmations | partially replaced | Confirm-tier semantics, user approval resume, and app approval service exist; concrete product confirmation adapters are deferred. |
 
 Execution order:
 
@@ -578,6 +583,8 @@ When touching app/gateway, also verify:
 - outgoing messages carry run status metadata
 - operator service returns serializable status and run-control responses
 - operator service keeps status reads non-mutating
+- approval service returns serializable runtime recovery responses
+- approval service still goes through step verification and acceptance after user approval
 - app CLI returns JSON for status, accepted control actions, rejected control actions, and argument errors
 
 When touching local verification, also verify:

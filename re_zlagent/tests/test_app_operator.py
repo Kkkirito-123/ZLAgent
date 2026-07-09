@@ -3,12 +3,14 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from re_zlagent.app import OperatorService  # noqa: E402
+from re_zlagent.app import ApprovalService, OperatorService  # noqa: E402
+from re_zlagent.harness.runtime import HarnessRuntime, RuntimeToolStep  # noqa: E402
 from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
 from re_zlagent.harness.tasking import (  # noqa: E402
     AcceptanceCriterion,
@@ -17,7 +19,35 @@ from re_zlagent.harness.tasking import (  # noqa: E402
     TaskEventType,
     TaskRun,
     TaskRunStatus,
+    StepStatus,
 )
+from re_zlagent.harness.tools import (  # noqa: E402
+    Evidence,
+    Tool,
+    ToolPermission,
+    ToolRegistry,
+    ToolResult,
+)
+
+
+class ConfirmTool(Tool):
+    name = "confirm_write"
+    description = "Confirm-tier fake mutation."
+    permission = ToolPermission.CONFIRM
+    is_read_only = False
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        return ToolResult.success(
+            "confirmed",
+            evidence=[
+                Evidence(
+                    type="runtime",
+                    ref="confirm:evidence",
+                    summary="confirm evidence",
+                )
+            ],
+            source=self.name,
+        )
 
 
 class AppOperatorTests(unittest.TestCase):
@@ -117,6 +147,80 @@ class AppOperatorTests(unittest.TestCase):
         self.assertEqual(data["result"]["forked_run"]["id"], "run-2")
         self.assertEqual(forked.metadata["forked_from_run_id"], "run-1")
         self.assertEqual(forked.metadata["fork_reason"], "alternate path")
+
+
+class AppApprovalTests(unittest.IsolatedAsyncioTestCase):
+    def _runtime(self) -> tuple[HarnessRuntime, InMemoryTaskStore]:
+        store = InMemoryTaskStore()
+        registry = ToolRegistry()
+        registry.register(ConfirmTool())
+        return HarnessRuntime(store=store, tools=registry), store
+
+    async def test_approval_service_resumes_confirm_checkpoint(self) -> None:
+        runtime, store = self._runtime()
+        contract = TaskContract(
+            id="contract-1",
+            user_goal="approve confirm tool",
+            acceptance_criteria=(
+                AcceptanceCriterion(
+                    id="confirm-evidence",
+                    description="confirm evidence exists",
+                    type=CriterionType.TOOL_EVIDENCE,
+                    evidence_refs=("confirm:evidence",),
+                ),
+            ),
+        )
+        await runtime.run(
+            contract=contract,
+            run_id="run-1",
+            steps=[
+                RuntimeToolStep(
+                    id="step-1",
+                    tool_name="confirm_write",
+                    required_evidence_refs=("confirm:evidence",),
+                )
+            ],
+        )
+        waiting_checkpoint = store.latest_checkpoint("run-1")
+
+        response = await ApprovalService(runtime).approve_checkpoint(
+            "run-1",
+            feedback="approved by user",
+        )
+        data = response.to_dict()
+
+        self.assertTrue(response.ok)
+        self.assertEqual(data["checkpoint_id"], waiting_checkpoint.id)
+        self.assertNotEqual(
+            data["metadata"]["current_checkpoint_id"],
+            waiting_checkpoint.id,
+        )
+        self.assertTrue(data["result"]["accepted"])
+        self.assertEqual(data["result"]["run"]["status"], "completed")
+        self.assertEqual(
+            data["result"]["acceptance_decision"]["status"],
+            "passed",
+        )
+        self.assertEqual(
+            data["result"]["step_verifications"][-1]["status"],
+            StepStatus.PASSED.value,
+        )
+        self.assertIn(
+            TaskEventType.USER_INPUT_RECORDED.value,
+            [event["type"] for event in data["result"]["events"]],
+        )
+        self.assertEqual(store.get_run("run-1").status, TaskRunStatus.COMPLETED)
+
+    async def test_approval_service_returns_structured_error(self) -> None:
+        runtime, _ = self._runtime()
+
+        response = await ApprovalService(runtime).approve_checkpoint("missing-run")
+        data = response.to_dict()
+
+        self.assertFalse(response.ok)
+        self.assertEqual(data["command"], "approve_checkpoint")
+        self.assertEqual(data["error"]["type"], "value_error")
+        self.assertIn("unknown run id", data["error"]["message"])
 
 
 if __name__ == "__main__":

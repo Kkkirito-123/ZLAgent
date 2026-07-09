@@ -58,6 +58,8 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
             result = await container.app.handle_message(self._message())
             inventory = container.facade.inventory().to_dict()
             runtime = container.facade.runtime().to_dict()
+            operator_snapshot = container.operator.status("missing-run").to_dict()
+            approvals = container.approvals
             container.close()
 
         self.assertTrue(result.agent_result.accepted)
@@ -66,6 +68,8 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime["components"]["tool_registry"])
         self.assertTrue(runtime["components"]["task_store"])
         self.assertTrue(runtime["components"]["progress_reader"])
+        self.assertFalse(operator_snapshot["ok"])
+        self.assertIsNotNone(approvals)
 
     async def test_bootstrap_can_use_sqlite_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

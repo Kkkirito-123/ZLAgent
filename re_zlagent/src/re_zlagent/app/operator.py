@@ -10,10 +10,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from re_zlagent.harness.progress import ProgressStatus, TaskProgressReader, TaskProgressSnapshot
-from re_zlagent.harness.runtime import RunControlResult, RunControlService
+from re_zlagent.harness.progress import (
+    ProgressStatus,
+    TaskProgressReader,
+    TaskProgressSnapshot,
+)
+from re_zlagent.harness.runtime import (
+    HarnessRuntime,
+    RunControlResult,
+    RunControlService,
+    RuntimeAcceptanceInput,
+    RuntimeResult,
+)
 from re_zlagent.harness.storage import TaskStore
-from re_zlagent.harness.storage.serde import checkpoint_to_dict, event_to_dict, run_to_dict
+from re_zlagent.harness.storage.serde import (
+    checkpoint_to_dict,
+    event_to_dict,
+    run_to_dict,
+)
+from re_zlagent.harness.tasking import TaskEventType
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +58,41 @@ class OperatorResponse:
             data["progress"] = self.progress.to_dict()
         if self.result is not None:
             data["result"] = control_result_to_dict(self.result)
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalResponse:
+    """Serializable app-level response for user approval recovery."""
+
+    ok: bool
+    command: str
+    run_id: str
+    checkpoint_id: str | None = None
+    result: RuntimeResult | None = None
+    error: dict[str, Any] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", dict(self.metadata))
+        if self.error is not None:
+            object.__setattr__(self, "error", dict(self.error))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the JSON-compatible approval response shape."""
+
+        data: dict[str, Any] = {
+            "ok": self.ok,
+            "command": self.command,
+            "run_id": self.run_id,
+            "checkpoint_id": self.checkpoint_id,
+        }
+        if self.result is not None:
+            data["result"] = runtime_result_to_dict(self.result)
+        if self.error is not None:
+            data["error"] = dict(self.error)
         if self.metadata:
             data["metadata"] = dict(self.metadata)
         return data
@@ -142,6 +192,57 @@ class OperatorService:
         )
 
 
+class ApprovalService:
+    """App boundary for explicit user approval recovery."""
+
+    def __init__(self, runtime: HarnessRuntime) -> None:
+        self._runtime = runtime
+
+    async def approve_checkpoint(
+        self,
+        run_id: str,
+        *,
+        checkpoint_id: str | None = None,
+        feedback: str = "",
+        acceptance: RuntimeAcceptanceInput | None = None,
+        interactive: bool = True,
+    ) -> ApprovalResponse:
+        """Approve and resume a waiting-user checkpoint through runtime."""
+
+        try:
+            result = await self._runtime.resume_with_user_approval(
+                run_id=run_id,
+                checkpoint_id=checkpoint_id,
+                feedback=feedback,
+                acceptance=acceptance,
+                interactive=interactive,
+            )
+        except ValueError as exc:
+            return ApprovalResponse(
+                ok=False,
+                command="approve_checkpoint",
+                run_id=run_id,
+                checkpoint_id=checkpoint_id,
+                error={
+                    "type": "value_error",
+                    "message": str(exc),
+                },
+            )
+        return ApprovalResponse(
+            ok=True,
+            command="approve_checkpoint",
+            run_id=run_id,
+            checkpoint_id=_approved_checkpoint_id(
+                result,
+                fallback=checkpoint_id,
+            ),
+            result=result,
+            metadata={
+                "current_checkpoint_id": result.run.current_checkpoint_id,
+            },
+        )
+
+
 def control_result_to_dict(result: RunControlResult) -> dict[str, Any]:
     """Serialize a RunControlResult without leaking storage internals."""
 
@@ -163,3 +264,74 @@ def control_result_to_dict(result: RunControlResult) -> dict[str, Any]:
         ),
         "metadata": dict(result.metadata),
     }
+
+
+def runtime_result_to_dict(result: RuntimeResult) -> dict[str, Any]:
+    """Serialize a RuntimeResult for app/operator surfaces."""
+
+    return {
+        "accepted": result.accepted,
+        "run": run_to_dict(result.run),
+        "events": [event_to_dict(event) for event in result.events],
+        "checkpoints": [
+            checkpoint_to_dict(checkpoint)
+            for checkpoint in result.checkpoints
+        ],
+        "tool_results": [
+            {
+                "metadata": tool_result.to_metadata(),
+                "content": tool_result.content,
+                "error": tool_result.error,
+                "evidence": [
+                    item.to_dict()
+                    for item in tool_result.evidence
+                ],
+                "side_effects": [
+                    item.to_dict()
+                    for item in tool_result.side_effects
+                ],
+            }
+            for tool_result in result.tool_results
+        ],
+        "acceptance_decision": (
+            _acceptance_decision_to_dict(result.acceptance_decision)
+            if result.acceptance_decision is not None
+            else None
+        ),
+        "failure": result.failure.to_dict() if result.failure else None,
+        "step_verifications": [
+            verification.to_dict()
+            for verification in result.step_verifications
+        ],
+    }
+
+
+def _acceptance_decision_to_dict(decision: Any) -> dict[str, Any]:
+    return {
+        "accepted": decision.accepted,
+        "status": decision.status.value,
+        "criteria": {
+            key: value.value
+            for key, value in decision.criteria.items()
+        },
+        "passed_criteria": list(decision.passed_criteria),
+        "failed_criteria": list(decision.failed_criteria),
+        "blocked_criteria": list(decision.blocked_criteria),
+        "optional_failed_criteria": list(decision.optional_failed_criteria),
+        "reason": decision.reason,
+        "evidence_refs": list(decision.evidence_refs),
+    }
+
+
+def _approved_checkpoint_id(
+    result: RuntimeResult,
+    *,
+    fallback: str | None,
+) -> str | None:
+    for event in result.events:
+        if event.type is not TaskEventType.USER_INPUT_RECORDED:
+            continue
+        checkpoint_id = event.payload.get("checkpoint_id")
+        if isinstance(checkpoint_id, str):
+            return checkpoint_id
+    return fallback
