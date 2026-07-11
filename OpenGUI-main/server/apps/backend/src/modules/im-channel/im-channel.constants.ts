@@ -1,4 +1,0 @@
-
-export const IM_CHANNEL_ADAPTERS = "IM_CHANNEL_ADAPTERS";
-
-export const DEFAULT_USER_ID = 1;

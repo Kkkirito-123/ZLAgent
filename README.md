@@ -1,1302 +1,494 @@
 # ZLAgent
 
-面向个人日常使用的 IM 优先 AI 助理平台。
+**Language:** [English](./README.md) | [Simplified Chinese](./README.zh-CN.md)
 
-![ZLAgent preview](photo.png)
+This repository is the canonical rebuilt ZLAgent project. The Python package keeps
+the `re_zlagent` namespace while the repository itself now lives at the root.
 
-📺 **项目演示视频**：[bilibili.com/video/BV1bc5S6dEq6](https://www.bilibili.com/video/BV1bc5S6dEq6/)
+The project delivers a reusable, release-gated agent harness and local product
+flow. Product-specific integrations remain explicit roadmap slices.
 
-项目基于 `FastAPI`、`PostgreSQL + pgvector`、`Redis`、`MCP`、OpenAI 兼容大模型和 [OpenGUI](./OpenGUI-main) 构建。系统采用 **先识别意图与技能，再注入记忆与上下文，再调用工具执行，最后按代码规则写入记忆、wiki cache 或文件型知识库** 的流程，可在微信 / Webhook 等 IM 场景下完成论文查询、旅游规划、日报订阅、定时任务、记忆管理、知识库写入、工具扩展和真实 Android 手机操作。
+## Repository Rules
 
-![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-green)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-336791)
-![Redis](https://img.shields.io/badge/Redis-7.x-DC382D)
-![MCP](https://img.shields.io/badge/MCP-Tools-black)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED)
-![License](https://img.shields.io/badge/License-MIT_%2B_BUSL--1.1-informational)
-![Version](https://img.shields.io/badge/version-1.2.2-blue)
+- `AGENTS.md` is a thin entry pointer.
+- `CLAUDE.md` is the source of truth for agent collaboration rules.
+- `ROADMAP.md` is the source of truth for delivery stages and migration status.
+- `CONTRIBUTING.md` keeps the short development workflow.
+- `*.zh-CN.md` files are human-facing translations. AI agents use the English
+  authority files.
+- Avoid long-lived process-document folders unless the user explicitly asks for them.
 
----
-
-## 本次大更新：ZLAgent × OpenGUI 手机操作协同
-
-本次更新把 [OpenGUI](./OpenGUI-main) 接入 ZLAgent 主流程。ZLAgent 不再只是在 IM 里聊天、查资料、调用普通工具，也可以把真实 Android 手机上的操作任务纳入同一套对话、工具、记忆、权限和 skill 管理体系。
-
-一句话概括：
+## Current Structure
 
 ```text
-ZLAgent 负责理解、规划、记忆和安全边界；
-OpenGUI 负责看见手机屏幕并在真实 Android 设备上执行；
-Android Client 负责截图、状态上报、动作落地和设备通信。
+.
+├── AGENTS.md
+├── CLAUDE.md
+├── CONTRIBUTING.md
+├── pyproject.toml
+├── README.md
+├── ROADMAP.md
+├── src/
+│   └── re_zlagent/
+│       ├── check.py
+│       ├── app/
+│       ├── gateway/
+│       └── harness/
+│           ├── facade.py
+│           ├── agent/
+│           ├── memory/
+│           ├── model/
+│           ├── observability/
+│           ├── evals/
+│           ├── progress/
+│           ├── runtime/
+│           ├── sandbox/
+│           ├── skills/
+│           ├── storage/
+│           ├── tasking/
+│           └── tools/
+└── tests/
 ```
 
-这不是把手机屏幕“直接交给视觉模型”，而是把手机操作变成 ZLAgent 主流程里的一个受控工具：先由主 Agent 判断任务意图、风险和停止条件，再交给 OpenGUI 子 Agent 执行，最后把执行状态、结果和失败信息回到 ZLAgent。
+## Implemented Core
 
-手机执行器的确定性触发词只有 `请你用手机`。用户只说 App 名、歌曲名、`播放`、`打开网易云` 等普通表达时，不会靠关键词直接激活手机执行；这些请求会先按普通对话交给 LLM 判断，必要时再询问用户是否要使用手机。
+Gateway:
 
-### 架构分工
+- `DeliveryTarget`
+- `IncomingMessage`
+- `OutgoingMessage`
+- `GatewayAdapter`
 
-| 组件 | 定位 | 负责内容 |
-|---|---|---|
-| ZLAgent | 主 Agent | 接收微信 / Webhook 消息，理解用户意图，拆解任务，选择工具，判断风险，管理普通记忆、知识库和 skill |
-| `open_gui` 工具 | 桥接层 | 设备列表、App 列表、设备绑定、打开 App、点击、执行手机任务、查询 / 暂停 / 恢复 / 取消 OpenGUI execution |
-| OpenGUI Backend | 手机执行子 Agent | 维护任务与 execution 状态，运行 Plan Supervisor / Executor Graph，调用 VLM 与动作执行链路，返回执行结果 |
-| Android Client | 设备运行层 | 保持 standby 连接，上传截图和结构化状态，通过无障碍服务执行点击、输入、滑动、返回、Home 等动作 |
+App:
 
-ZLAgent 不直接接管手机屏幕，OpenGUI 也不接管 ZLAgent 的长期记忆和主对话。ZLAgent 负责“该不该做、怎么描述目标、何时停、何时问用户”，OpenGUI 负责“在手机上真实执行并把证据返回”。
+- `AgentApplication`
+- `ApplicationDispatcher`
+- `ApplicationResult`
+- `DispatchResult`
+- `ApplicationBootstrapConfig`
+- `ApplicationContainer`
+- `ApplicationRuntimeContainer`
+- `LocalTaskAdapter`
+- `OperatorService`
+- `OperatorResponse`
+- `ApprovalService`
+- `ApprovalResponse`
+- `build_application_container`
+- `build_application_runtime`
+- `run_cli`
 
-### 主流程
+Local check:
+
+- `python -m re_zlagent.check`
+- `re-zlagent-check`
+
+Harness facade:
+
+- `HarnessFacade`
+- `HarnessInventory`
+- `HarnessRuntimeSnapshot`
+- `build_harness_facade`
+
+Tool boundary:
+
+- `Tool`
+- `ToolResult`
+- `ToolRegistry`
+- `ToolSearchResult`
+- `PermissionPolicy`
+- `ReadBeforeWritePolicy`
+
+Workspace file tools:
+
+- `WorkspacePathPolicy`
+- `ReadFileTool`
+- `WriteFileTool`
+
+Message tool:
+
+- `SendMessageTool`
+- `MessageSender`
+- `ToolOutgoingMessage`
+
+URL tool:
+
+- `ReadUrlTool`
+- `UrlFetcher`
+- `UrlFetchResult`
+
+Tasking:
+
+- `TaskContract`
+- `TaskRun`
+- `TaskEventLog`
+- `Checkpoint`
+- `CheckpointStore`
+- `AcceptanceGate`
+- `RecoveryPolicy`
+- `ResumePolicy`
+- `PlanDAG`
+- `PlanStep`
+- `StepStatus`
+- `StepVerification`
+- `StepVerifier`
+- `DagExecutionAssessment`
+- `DagExecutionPolicy`
+- `ProgramPlan`
+- `ProgramPhase`
+- `LongTaskProjector`
+- `LongTaskProjection`
+- `PendingInteraction`
+- `ArtifactRecord`
+- `SideEffectRecord`
+
+Storage:
+
+- `TaskStore`
+- `InMemoryTaskStore`
+- `LongTaskStore`
+- `InMemoryLongTaskStore`
+- `SqliteTaskStore`
+- `SqliteLongTaskStore`
+- `PostgresTaskStore`
+- `PostgresLongTaskStore`
+
+Runtime:
+
+- `RunControlAction`
+- `RunControlResult`
+- `RunControlService`
+- `RuntimeToolStep`
+- `RuntimeAcceptanceFacts`
+- `RuntimeResult`
+- `RuntimeSubmission`
+- `ContextPack`
+- `ContextPackBuilder`
+- `ParkedRunCandidate`
+- `ParkedRunKind`
+- `ParkedRunScanner`
+- `DurableWorker`
+- `HarnessRuntime`
+- `HarnessRuntime.submit`
+- `HarnessRuntime.resume_from_checkpoint`
+- `HarnessRuntime.resume_with_alternative_tool`
+- `HarnessRuntime.resume_with_user_approval`
+
+Agent orchestration:
+
+- `AgentRunRequest`
+- `AgentPlan`
+- `AgentPlanner`
+- `StaticAgentPlanner`
+- `JsonPlanPlanner`
+- `AgentOrchestrator`
+- `AgentOrchestrator.submit`
+
+Model:
+
+- `ModelMessage`
+- `ModelResponse`
+- `ModelClient`
+- `OpenAICompatibleModelClient`
+- `OpenAICompatibleModelConfig`
+
+Memory:
+
+- `MemoryEntry`
+- `MemoryKind`
+- `MemorySource`
+- `MemoryStore`
+- `InMemoryMemoryStore`
+- `MemoryManager`
+
+Skills:
+
+- `SkillManifest`
+- `FileSystemSkillLoader`
+- `SkillGuard`
+- `scan_skill_text`
+
+Observability:
+
+- `TraceSpan`
+- `TraceEvent`
+- `TraceRecorder`
+- `InMemoryTraceRecorder`
+- `DoctorRunner`
+- `DoctorReport`
+- `build_harness_doctor`
+- `SupportBundleBuilder`
+- `redact_mapping`
+
+Evals:
+
+- `EvalScenario`
+- `EvalCaseResult`
+- `EvalSuiteResult`
+- `AgentEvalRunner`
+- `RunHealthMonitor`
+- `BenchmarkCorpus`
+- `ReleaseBenchmarkRunner`
+- `ReleaseBenchmarkReport`
+
+Progress:
+
+- `TaskProgressReader`
+- `TaskProgressSnapshot`
+- `LongTaskProgressReader`
+- `LongTaskProgressSnapshot`
+
+## Delivery Status
+
+The core rebuild has replaced the active legacy tree. The authoritative stage
+history, intentionally deferred capabilities, and acceptance gates are in
+[`ROADMAP.md`](./ROADMAP.md).
 
 ```text
-用户在微信 / Webhook 中明确说“请你用手机 ...”
-        |
-        v
-ZLAgent 才允许激活手机 GUI 工具
-        |
-        v
-加载必要上下文、普通记忆、权限规则和当前设备绑定
-        |
-        v
-调用 open_gui 工具
-        |
-        v
-OpenGUI Backend 创建 task / execution
-        |
-        v
-Android Client 观察屏幕并执行动作
-        |
-        v
-execution 状态、结果、失败原因回到 ZLAgent
-        |
-        v
-ZLAgent 回复用户，并按规则沉淀可复用经验
+M1-M5   LANDED   committed foundation and recovery boundaries
+M6-M12  LANDED   long-task projection, ledger, storage, scanner, and progress
+M13     LANDED   acceptance trust and immutable task truth
+M14     LANDED   persisted plans and complete recovery continuation
+M15     LANDED   crash-safe side-effect outbox
+M16     LANDED   durable worker ownership and retry budgets
+M17     LANDED   real task submission and execution MVP
+M18     LANDED   reliability and release gates
+M19-M20 DEFERRED optional migrations and safe DAG concurrency
+M21     LOCAL    root promotion and legacy closure awaiting final clean-checkout evidence
 ```
 
-当前已落地的 ZLAgent 侧能力包括：
+The local product MVP supports persisted submission, worker execution, approval
+recovery, and verified result reads across process restart. M18 adds a versioned
+six-case release corpus, semantic and latency thresholds, Ruff, mypy, and one
+machine-readable quality command. The repository-root workflow runs the same gate
+on Python 3.11 and 3.13.
 
-- `ZLAGENT_OPENGUI_ENABLED=true` 时自动注册 `open_gui` 工具。
-- `ZLAGENT_OPENGUI_BASE_URL` 默认指向 OpenGUI backend，Docker 中使用 `http://host.docker.internal:7777`。
-- `gui_device_bindings` 按 `platform + user_id` 记录默认手机，微信、Webhook 或后续渠道可以绑定不同设备。
-- `tool_search` 只有在当前用户原文包含 `请你用手机` 时才会返回 `open_gui`，避免 `网易云`、`播放`、`打开 App` 这类普通关键词直接触发手机执行。
-- `open_gui` 支持 `devices`、`apps`、`bind`、`current_binding`、`open_app`、`tap/click`、`do`、`status`、`pause`、`resume`、`cancel`。
-- 根目录 `./start.sh` 会同时启动 OpenGUI backend 和 ZLAgent；`./start.sh --with-phone` 会继续构建、安装并启动 Android Client。
-- `./status.sh` 和 `./phone-wifi.sh` 用于查看服务、设备在线状态和无线调试连接。
+## Local Product CLI
 
-### 手机任务执行策略
-
-手机任务会先被整理成明确的执行契约，而不是直接把一句话丢给视觉模型。ZLAgent 会尽量提供：
-
-- 任务目标：要打开什么 App、到达什么页面、完成什么观察或操作。
-- 停止条件：做到哪一步算完成，什么情况下应该暂停。
-- 安全边界：哪些动作可以继续，哪些动作必须问用户。
-- 验证标准：需要看到什么页面证据、状态变化或 execution 结果。
-
-执行路线按稳定性排序：
-
-```text
-确定性系统能力
--> 结构化 UI / 元素候选
--> OpenGUI 屏幕观察与动作执行
--> VLM 兜底理解
-```
-
-当前已经落地的稳定能力包括：
-
-- App 列表：从在线 Android 设备读取可启动应用列表。
-- Package 启动：根据包名或 App 名打开目标应用，例如 `com.netease.cloudmusic`。
-- 屏幕截图：由 Android client 截取当前屏幕并上传给 OpenGUI executor。
-- 无障碍动作：点击、长按、滑动、拖动、输入、返回、主页、等待、完成、请求用户接管。
-- Execution 管理：查询、暂停、恢复、取消 OpenGUI 执行。
-
-MediaSession 播放控制、AppFunctions、Notification RemoteInput、Deep Link 搜索页直达等属于后续可扩展的确定性 Android 接口，当前版本尚未作为 ZLAgent/OpenGUI 的独立工具接入。现在遇到“搜索歌曲并播放”“在 App 内找到某个页面”这类业务动作时，通常仍需要 OpenGUI 的截图、无障碍动作和 VLM 能力处理。这样做的核心目标是：能确定就不猜，必须看屏幕时再看屏幕。
-
-### 双层记忆设计
-
-ZLAgent 和 OpenGUI 的记忆职责保持分离：
-
-| 记忆池 | 关注内容 | 典型用途 |
-|---|---|---|
-| ZLAgent 普通记忆 | 用户偏好、项目背景、长期规则、通用任务经验 | 旅行偏好、常用工具、项目上下文、日常对话规则 |
-| OpenGUI 手机记忆 | 设备状态、执行失败、页面阻塞、验证标准、App 操作经验 | 某 App 登录阻塞、广告弹窗处理、页面证据不足、任务超时经验 |
-
-普通对话不会默认注入 OpenGUI 的手机操作经验，避免“手机执行日志”污染日常聊天。只有当任务被识别为手机 GUI 操作时，ZLAgent 才把相关设备绑定、执行状态和可复用经验作为指导信息交给 OpenGUI。
-
-OpenGUI 执行结束后，设备离线、任务超时、误判成功、页面证据不足、登录 / 权限 / 广告 / 网络阻塞等信息会回到 ZLAgent。后续遇到类似任务时，这些经验可以重新进入手机任务上下文，形成：
-
-```text
-执行结果
--> 失败 / 成功经验沉淀
--> 下次任务前注入相关经验
--> 修正 OpenGUI 子 Agent 行为
-```
-
-### 安全边界
-
-低风险手机操作可以自动执行，例如：
-
-- 查看在线设备、查看已安装 App、查看当前绑定。
-- 打开 App、观察当前屏幕、读取页面状态。
-- 普通页面导航、返回桌面、低风险点击。
-- 查询 execution 状态。
-
-高风险动作必须确认，包括：
-
-- 支付 / 转账 / 红包 / 下单 / 购买。
-- 发送消息、发布内容、提交表单。
-- 删除内容、清空数据、导出敏感信息。
-- 授权 / 登录 / 绑定账号。
-- 输入密码、验证码、银行卡或身份信息。
-- 修改安全设置。
-
-`open_gui` 工具本身仍属于 confirm 级能力；只读和低风险动作会被工具注册表放行，高风险关键词、绑定设备、取消任务等动作会进入 ZLAgent 的确认流。用户在 IM 里确认后，系统才继续执行。
-
-### Skill 沉淀
-
-手机任务中的可复用经验不会直接变成正式 skill。更稳妥的路径是：
-
-```text
-一次执行
--> OpenGUI / ZLAgent 记录可复用经验
--> 多次验证后形成 draft skill
--> 人工或审查流程确认
--> 正式进入 skill 管理体系
-```
-
-例如“某音乐 App 搜索并播放歌曲”“某资讯 App 搜索主题并总结前三条结果”“某购物 App 只浏览不下单”等流程，都可以先在 OpenGUI 手机记忆中积累经验，再沉淀成面向后续手机任务的 skill。
-
-### 启动方式
-
-推荐使用根目录脚本同时启动两套服务：
+Configure an OpenAI-compatible planner without placing a secret in command
+arguments or persisted task metadata:
 
 ```bash
-./start.sh
+mkdir -p .zlagent
+export ZLAGENT_MODEL_BASE_URL="https://provider.example/v1"
+export ZLAGENT_MODEL_NAME="planner-model"
+export OPENAI_API_KEY="..."
 ```
 
-这会启动：
-
-```text
-ZLAgent API      http://localhost:8020
-OpenGUI Backend  http://localhost:7777
-```
-
-如果已经连接 Android 手机并开启 USB 调试，可以继续安装和启动手机端：
+Submit a plan. Submission persists the immutable contract, plan, request context,
+and a `created` run; it does not execute tools:
 
 ```bash
-./start.sh --with-phone
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --workspace . \
+  submit run-001 "Read README.md and produce a verified result" \
+  --context-json '{"channel":"local"}'
 ```
 
-常用检查命令：
+Execute and inspect durable work:
 
 ```bash
-./status.sh
-curl http://localhost:7777/api/remote-control/devices
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . work run-001
+
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite status run-001
 ```
 
-无线调试辅助：
+When `status.pending_interactions` contains an approval request, use its
+`resume_token`. Confirm-tier tools cannot be pre-approved by planner JSON:
 
 ```bash
-./phone-wifi.sh ip
-./phone-wifi.sh pair <pair_ip:pair_port>
-./phone-wifi.sh connect <device_ip:adb_port>
-./phone-wifi.sh devices
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . \
+  approve run-001 --resume-token RESUME_TOKEN --feedback "approved"
 ```
 
-### 代码位置
-
-| 能力 | 代码位置 |
-|---|---|
-| ZLAgent 注册 OpenGUI 工具 | `backend/bootstrap/runtime.py` |
-| OpenGUI 工具定义与安全判断 | `backend/tools/builtins/open_gui.py` |
-| OpenGUI REST client | `backend/opengui/client.py` |
-| 手机设备绑定表 | `backend/db/models.py` / `backend/db/gui_devices.py` |
-| OpenGUI backend 启动编排 | `start.sh` / `scripts/opengui-supervisor.sh` |
-| 服务与设备状态检查 | `status.sh` / `phone-wifi.sh` |
-| OpenGUI 后端子 Agent | `OpenGUI-main/server/apps/backend/src/modules/graph-agent/` |
-| Android 动作执行 | `OpenGUI-main/client/core_accessibility/` |
-| 工具测试覆盖 | `tests/test_open_gui_tool.py` |
-
----
-
-## v1.2.2 与 origin 第一版的差异
-
-origin 第一版已经具备对话、工具调用、记忆、知识沉淀、定时任务和微信接入等基础能力。当前版本主要调整方向是：删除未落地的依赖和能力描述，明确已验证链路，并把对话上下文、长期记忆、工具权限、失败处理和运行检查整理为更清晰的服务架构。
-
-### 架构边界差异
-
-| 维度 | origin 第一版 | 当前版本 |
-|---|---|---|
-| 运行依赖 | README 和 compose 中包含 Neo4j，并把图数据库作为 GraphRAG 的落地目标 | 移除 Neo4j 运行依赖，默认服务为 `zlagent`、`postgres`、`redis` |
-| 消息渠道 | README 描述微信、飞书、Webhook，并保留 Email、Telegram 等方向 | README 只把个人微信标为已端到端验证；WeCom Bot、Webhook 标注为代码面或测试面 |
-| 启动流程 | 初始化、接口、后台任务和消息通道的说明集中在一起 | 启动、接口注册、后台任务、消息通道分别说明，部署边界更明确 |
-| 工具调用 | 更强调工具清单和文件结构 | 更强调统一调用流程、权限确认、失败处理和运行记录 |
-| 记忆与知识 | 长期记忆、wiki、文件知识库、图谱容易被理解为自动连续沉淀链路 | 明确区分短期上下文、长期记忆、wiki 缓存、文件知识库和图谱视图，各自有触发条件 |
-| 图谱能力 | GraphRAG 被描述为写入 Neo4j 的知识图谱 | 当前从已有记录生成图谱视图或缓存，不再写入 Neo4j |
-| 验证状态 | 主要描述设计和脚本验证 | 补充 Docker 三服务、微信收发、HTTP 接口、MCP、GraphRAG 接口的实测状态 |
-
-### 核心机制差异
-
-| 机制 | origin 第一版的表达 | 当前版本的差异 |
-|---|---|---|
-| 主流程 | 已有“收到消息 -> 调模型 -> 用工具 -> 回复”的基本链路 | 各入口统一进入同一套对话流程，减少重复业务分支 |
-| 短期记忆 | 已有对话上下文能力，但与长期记忆说明混合 | 最近对话单独作为短期上下文，用于承接省略信息和补充参数 |
-| 长期记忆 | 已有记忆系统，但写入边界不够突出 | 只保存偏好、事实、经验等可复用信息，避免把低信息量回复写入长期记忆 |
-| 历史压缩 | 已有压缩能力，说明更偏实现细节 | 长对话优先保留最近内容，并压缩旧工具结果和中间过程 |
-| 缓存 | Redis、wiki、工具缓存分散说明 | 明确为对话热缓存、重复查询缓存、技能答案缓存三类 |
-| 错误处理 | 已有失败恢复能力，但不是架构主线 | 工具失败会回填给模型；重复失败会被拦截；常见失败会记录为后续参考 |
-| 超时与重试 | 各模块存在 timeout / retry | 明确模型路由、定时任务发送、微信发送等链路的超时和重试边界 |
-| 权限确认 | 已有安全等级和确认机制 | 安全动作直接执行，高风险动作需要确认，不允许的动作直接拒绝 |
-| 知识写入 | 容易被理解为所有内容都会自动沉淀 | 记忆、wiki、文件知识库、图谱视图均按触发条件写入或生成 |
-| 运行检查 | 有部分检查接口 | README 明确列出健康检查、运行状态、网关状态和工具调用统计 |
-
-当前版本的主要变化不是增加功能数量，而是明确架构边界：哪些依赖已经移除，哪些通道已经验证，哪些状态会被保存，哪些能力需要确认，以及失败、超时和重试如何处理。
-
-参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的部分思路主要体现在工程组织方式上：模型负责判断，代码负责对话流程、工具调用、记忆、权限和失败处理；ZLAgent 将这些思路改造到 IM 常驻助理场景。
-
----
-
-## 设计思路：对话优先
-
-ZLAgent 的交互入口以 IM 对话为主。用户通过微信、Webhook 或测试接口提交自然语言请求，系统在后台处理上下文、记忆、工具、权限和消息发送。
-
-```text
-        ┌──────────────────────────────────────────┐
-        │   用户看到的部分：微信 / Webhook 对话      │
-        │  ┌────────────────────────────────────┐  │
-        │  │   系统处理的部分：工具、权限、任务    │  │
-        │  │  ┌──────────────────────────────┐  │  │
-        │  │  │   底层保存的部分：记忆、知识、   │  │  │
-        │  │  │   缓存、数据库                 │  │  │
-        │  │  └──────────────────────────────┘  │  │
-        │  └────────────────────────────────────┘  │
-        └──────────────────────────────────────────┘
-```
-
-| 层次 | 做什么 | 用户是否需要关心 |
-|---|---|---|
-| 对话层 | 微信、Webhook、测试接口 | 需要，作为主要交互入口 |
-| 执行层 | 选工具、确认危险动作、运行任务 | 通常不需要，涉及高风险动作时需要确认 |
-| 记忆层 | 保存偏好、知识、缓存和图谱视图 | 不需要 |
-| 基础层 | 模型接口、数据库、Redis | 不需要 |
-
-**使用方式**：
-
-1. **接入能力**：用户提出需要的能力，系统检查是否可以接入，必要时要求确认。
-2. **日常使用**：用户继续通过自然语言对话，系统选择工具、带入记忆并处理结果。
-
-记忆怎么存、技能怎么选、图谱怎么抽、上下文怎么压缩、失败怎么恢复——**用户全程不需要知道**。
-
----
-
-## 核心数据流
-
-```text
-用户消息（微信 / WeCom Bot / Webhook）
-        |
-        v
-识别这句话要做什么
-判断是新任务，还是接着上一轮说
-        |
-        v
-带上必要的上下文和长期记忆
-        |
-        v
-只加载当前任务需要的技能和知识
-        |
-        v
-模型决定下一步
-需要工具就调用工具，需要确认就问用户
-        |
-        v
-答案缓存  →  文件知识库  →  图谱视图
-答案缓存 / 文件知识库 / 图谱快照三层复用
-        |
-        v
-回复之后再做后台整理
-按规则写记忆、写缓存或更新知识库
-```
-
-核心思路：
-
-> **先理解用户要什么，再带上必要记忆；先收窄可用能力，再调用模型；能复用的信息再按规则保存。**
-
-## 路由与写入安全边界
-
-为了避免上下文污染，ZLAgent 对“确认词”和“补槽词”做了区分：
-
-- 纯确认词，如 `可以`、`好的`、`嗯`、`行`、`继续`
-  - 不应被当作新意图
-  - 不应触发新的技能继承
-  - 不应写入 wiki 或长期记忆
-
-- 真正的补槽短句，如 `三天吧`、`预算 2000`、`从上海出发`
-  - 可以继承上一轮有效上下文
-  - 可以作为当前技能的参数补全
-
-系统在路由层、写入层、知识缓存层都设置了防污染检查，避免把低信息量回复误写成可复用知识。
-
----
-
-## 架构参考：模型负责判断，代码负责执行
-
-这个项目参考了 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 的思路：模型本身负责判断、推理和生成；代码负责把消息、上下文、记忆、工具、权限、后台任务组织好。也就是说，ZLAgent 不在代码里写死复杂决策，而是给模型准备一个稳定的工作环境。
-
-可以把 ZLAgent 理解成：
-
-```text
-ZLAgent = 模型
-        + 微信 / Webhook 入口
-        + 一条稳定的对话流程
-        + 上下文和记忆
-        + 工具和 MCP 扩展
-        + 权限确认
-        + 知识缓存和文件知识库
-        + 运行检查
-```
-
-其中最核心的循环只有一个：
-
-```text
-用户消息
-  -> 组装上下文
-  -> 模型判断下一步
-  -> 如果需要工具：执行、回填结果、继续循环
-  -> 如果不需要工具：生成回复
-  -> 回复 IM
-  -> 后台按规则写入记忆或 wiki cache
-```
-
-这个主流程不因为新增工具、接入微信、增加知识库而改变。新增能力只需要接进同一套流程。
-
-## 当前架构
-
-### 1. 入口层：把真实世界变成标准消息
-
-用户不直接面对 API 和数据库，而是在微信、Webhook 或运维接口里发自然语言。入口层只做三件事：
-
-- 把不同渠道的消息统一成 `IncomingMessage`
-- 给回复准备好对应的 `DeliveryTarget`
-- 记录网关收发状态，便于排查“收到了没有、发出去了没有”
-
-这层的目标是让后面的主流程不关心消息来自微信还是 Webhook。
-
-### 2. 对话准备：每一轮开始前先整理
-
-每轮对话开始前，系统会先整理当前用户、会话、上一轮上下文、可用技能、长期记忆、工具权限和追踪信息。
-
-它负责回答几个问题：
-
-- 这句话是新任务，还是上一轮的补槽？
-- 需要加载哪个技能，而不是把所有技能都塞进提示词？
-- 哪些长期记忆应该带上，哪些不该污染当前对话？
-- 模型是否可以直接回复，还是要调用工具？
-
-### 3. 主流程：模型决策，代码执行
-
-ZLAgent 的代码不替模型做复杂决策。代码只维护循环：
-
-- 模型要回复，就把回复送回 IM
-- 模型要查资料、读文件、建任务、发消息，就走工具执行
-- 工具结果再回填给模型，让模型继续判断
-- 高风险动作进入确认流，用户在 IM 里回复同意后再执行
-
-工具不是独立的业务分支，而是统一执行流程的一部分。所有工具都走同一套调用、权限、失败处理和日志记录流程。
-
-### 4. 工具管理：内置能力 + MCP 扩展
-
-工具分两类：
-
-- **内置能力**：记忆、定时任务、知识写入、文件读写、网页搜索、消息投递等平台基础能力
-- **外部能力**：通过 MCP 动态接入第三方工具，并统一进入同一个工具池
-
-用户的体验不应该是“记住工具名”，而是说出需求：例如“我需要查实时航班”“每天早上推送论文摘要”。系统再判断已有能力是否够用，不够再走 MCP 安装和确认。
-
-### 5. 记忆和知识：把可复用信息留下来
-
-ZLAgent 的长期价值不在单次回答，而在代码明确允许的状态写入：
-
-- **长期记忆** 保存用户偏好、长期事实和使用习惯
-- **答案缓存** 保存明确开启缓存的技能回答，下一次可以直接复用
-- **文件知识库** 把用户确认保存的主题资料写成 markdown 文件
-- **图谱视图** 从已有记录临时整理节点和关系，供接口和页面查看
-
-这几层的关系是：记忆和答案缓存是可写入状态，文件知识库保存成 markdown，图谱视图从这些已有内容里整理出来。
-
-### 6. 运行检查：让它能长期在线
-
-因为目标是 IM 常驻助理，系统必须能被监控和恢复：
-
-- Docker Compose 管理 `zlagent + postgres + redis`
-- `/api/health` 看活性
-- `/api/doctor` 看关键子系统
-- `/api/runtime` 看当前运行状态
-- `/api/gateways` 看 IM 网关状态
-- `/api/harness/metrics` 看工具调用和运行统计
-
-这一层用于支持长期运行和故障定位。
-
----
-
-## 技能、记忆与知识写入流程
-
-ZLAgent 当前代码里的写入路径分为三类：
-
-1. **长期记忆**
-   - 用户偏好、固定习惯、可复用事实
-   - 由 `memory` 子系统管理，持久化到 PostgreSQL
-
-2. **答案缓存**
-   - 高频问答、稳定答案、可复用事实
-   - 由 `wiki` 子系统管理；只有 skill manifest 里启用 `wiki_cache` 时才会自动写入
-   - skill manifest 里启用 `crystallize` 时，会额外调用 crystallizer 拆出 atomic facts
-
-3. **文件型知识库**
-   - `knowledge_mode_manage` 创建 `workspace/knowledge_modes/<mode_id>/`
-   - `knowledge_ingest` 写入 `wiki/outputs/*.md`，并更新 `wiki/index.md` 与 `wiki/log.md`
-
-### 关于技能管理
-
-系统可以辅助生成、审查和维护技能，但不会在没有控制的情况下随意“自动长出”新技能文件。  
-技能通常通过以下方式产生：
-
-- 人工编写 `workspace/skills/<name>/SKILL.md`
-- 通过 `skill_manage` / `curator` 流程创建或更新
-- 经 review / 审查后进入可用状态
-
-也就是说，ZLAgent 会在规则允许时写入记忆、wiki cache 或知识库文件，但技能本身仍然是受控演进的。
-
-## 适用场景与边界
-
-ZLAgent 适合以下场景：
-
-- 个人 IM 日常助理
-- 论文 / 旅行 / 天气 / 记忆 / 定时任务等高频对话任务
-- 通过 OpenGUI 操作真实 Android 手机 App 的个人自动化任务
-- 需要长期记忆、技能管理、MCP 工具扩展的助理系统
-- 需要在微信 / Webhook 里直接完成自然语言交互的场景
-
-ZLAgent 不适合以下场景：
-
-- 强实时交易系统或高频低延迟业务核心
-- 必须强事务一致性的在线业务主系统
-- 超大规模多人协作知识库的完整替代品
-- 需要完全无审核自动写入生产技能的场景
-
----
-
-## 架构概览
-
-```mermaid
-flowchart TD
-    A[用户消息: 微信 / WeCom Bot / Webhook] --> B[消息入口]
-    B --> C[后端接口]
-    C --> D[主对话流程]
-
-    D --> E[判断用户要做什么]
-    E --> F{选择需要的技能或知识库}
-    F --> G[带上相关记忆]
-    G --> H[加载当前需要的技能]
-    H --> I[调用模型]
-
-    I --> J1[内置工具]
-    I --> J2[MCP 外部工具]
-    I --> J3[是否命中答案缓存]
-    I --> J4[open_gui 手机工具]
-
-    J3 -->|命中| K[直接复用缓存答案]
-    J3 -->|未命中| L[继续让模型处理]
-
-    J1 --> M[权限判断]
-    J2 --> M
-    J4 --> M
-    M -->|普通安全动作| N[执行普通工具]
-    M -->|手机任务| OG[OpenGUI Backend]
-    M -->|需要确认| O[等待用户确认]
-    O -->|同意执行普通工具| N
-    O -->|同意执行手机任务| OG
-    N --> P[工具结果]
-    OG --> AC[Android Client]
-    AC --> P
-    P --> I
-
-    I --> Q[回复到 IM]
-    Q --> R[回复后的后台整理]
-    R --> S1[写入长期记忆]
-    R --> S2[可选写入答案缓存]
-    R --> S3[可选做技能复盘]
-
-    X[文件知识库] --> Y[图谱视图接口]
-    S1 --> Y
-```
-
----
-
-## 记忆、工具与权限如何协作
-
-ZLAgent 的重点不是“有多少工具”，而是每一轮对话里这些能力如何被安全地交给模型。
-
-### 记忆进入上下文
-
-记忆不是一股脑塞给模型。每轮对话会先判断当前消息是否需要长期事实，再取少量相关记忆带进去。用户说“以后默认坐高铁”这类长期偏好时，会在回复之后进入后台整理，再写入长期记忆。
-
-这样做有两个目的：
-
-- 让模型记得用户偏好，而不是每次从零开始
-- 避免把无意义确认词、临时补槽、一次性噪声写成长期事实
-
-### 工具怎么接进来
-
-工具统一接到同一套调用流程里。模型只需要知道“当前可以做什么”，不需要关心底层是内置函数、MCP server，还是某个领域包。
-
-工具调用的统一规则是：
-
-- 只读能力可以直接执行
-- 写入、发送、安装、执行代码等高风险动作进入确认流
-- 重复失败、无进展调用会被失败保护拦住
-- MCP 接入的外部能力必须先经过安装参数校验、运行时注册和权限分配
-
-这让系统可以扩展能力，但不会因为扩展而失去边界。
-
-### 权限不是弹窗，而是对话协议
-
-ZLAgent 面向 IM，所以确认也发生在 IM 里。模型提出动作，系统生成可读确认消息，用户回复“可以 / 不行”，然后系统继续执行或取消刚才那个动作。确认不是 Web 控制台上的按钮，而是对话的一部分。
-
-### MCP 的位置
-
-MCP 不是第二套 agent，也不是绕过权限的插件系统。它只是外部工具的一种接入方式：
-
-```text
-内置能力
-外部 MCP 能力
-领域能力
-        |
-        v
-统一工具注册表
-        |
-        v
-权限判断 / 确认 / 执行 / 观测
-        |
-        v
-主对话流程
-```
-
-所以后续加新能力时，不需要改主流程，只需要把能力接入同一套注册、权限和日志体系。
-
----
-
-## 外部信息与知识写入
-
-ZLAgent 把“临时查资料”和“明确写入知识库”分开处理。
-
-### 临时信息：查完即用
-
-网页搜索、实时交通、天气、论文检索这类能力属于临时信息层。它们的共同特点是：
-
-- 结果有时效性，不应该默认写成长期记忆
-- provider 可以切换，模型不需要知道底层来源
-- 工具输出会归一成稳定格式，方便模型继续推理
-- 查不到、超时、限流时返回可解释错误，而不是静默失败
-
-这类能力主要解决“当前问题需要外部事实”的场景。
-
-### 长期知识：可复用、可阅读、可查询
-
-当前代码里的长期知识分三层：
-
-| 层 | 作用 | 适合存什么 |
-|---|---|---|
-| 答案缓存 | 让高频稳定问答直接复用 | 旅行路线、常见解释、固定流程 |
-| 文件知识库 | 让保存结果可读、可改、可审查 | 论文摘要、项目资料、专题知识 |
-| GraphRAG 快照 | 让已有记录以节点 / 边形式查看 | 人、项目、偏好、论文、主题之间的关系 |
-
-GraphRAG 不在同步对话链路里阻塞用户。当前 `/api/graph-rag` 和 `/api/knowledge-bases/{id}/graph` 会从 memory、knowledge mode 文件、manual/runtime records 构建快照；`/api/knowledge-bases/{id}/rebuild-graph` 可触发 LLM 抽取并写入 graph cache。
-
-### 为什么要分三层
-
-单一“向量库”很容易混掉不同用途的信息。ZLAgent 分三层是为了让每类知识有清晰边界：
-
-- 答案缓存追求快
-- 文件知识库追求可读和可维护
-- 图谱快照追求结构化关系
-
-这也是系统从“会回答一次”走向“越用越懂你”的关键。
-
----
-
-## 知识与缓存三层
-
-| 层 | 模块 | 内容 | 命中速度 |
-|---|---|---|---|
-| 答案缓存 | `backend/wiki/store.py` + `normalizer.py` + `crystallizer.py` | `(skill_id, normalized_query) → answer + TTL`；近义合并归一为 canonical key | 毫秒级 |
-| 文件知识库 | `workspace/knowledge_modes/<mode>/wiki/` + `knowledge_ingest` 工具 | 写入页 markdown + `index.md` + `log.md`，按 mode 分库 | 文件读 |
-| 图谱快照 | `backend/graph/` + graph cache / JSON snapshot | LLM 抽取或启发式构建的结构化关系网络 | 文件 / 内存快照 |
-
-三层互相独立：某 skill 可只用答案缓存；某 mode 可只产 markdown 文件；GraphRAG API 再从已有记录构建快照。
-
----
-
-## 领域能力：以旅行为例
-
-旅行是一个典型的高频领域：它既需要用户偏好，又需要实时信息，还会把可复用的旅行回答写入 wiki cache。
-
-ZLAgent 把旅行能力做成领域包，而不是只靠普通提示词：
-
-- 用户偏好来自 memory，例如“默认坐高铁”
-- 实时查询来自工具，例如 12306 车次和 Open-Meteo 天气；航班、酒店等需要接入对应 MCP
-- 常见路线可以进入答案缓存
-- 去过的城市可以进入 visited map
-- 复杂计划仍然交给模型组织成自然语言
-
-这类领域包的意义是：把稳定业务能力做成可复用模块，把个性化判断留给模型。
-
----
-
-## 技术栈
-
-| 类型 | 技术 |
-|---|---|
-| Web 服务 | FastAPI + Uvicorn |
-| 对话流程 | 自研主流程 + 工具注册 + 权限确认 + 运行检查 |
-| LLM | OpenAI 兼容（DeepSeek / Qwen / OpenAI 等） |
-| 关系数据库 | PostgreSQL 16 + pgvector |
-| 缓存 / Session | Redis 7（LRU 256MB） |
-| 工具协议 | MCP（stdio + streamable-http） |
-| 手机执行 | OpenGUI Backend + Android Client + AccessibilityService |
-| 包管理 | npm / pip / uvx / git+ |
-| 长期记忆 | PostgreSQL `UserMemory` 表 + JSONL 会话归档 |
-| 知识库 | 文件型 markdown + 图谱视图 / 模型抽取缓存 |
-| 运行环境 | Python 3.11+ / Node.js / Docker / Android / macOS / Linux / Windows PowerShell |
-
----
-
-## 快速开始
-
-### 1. 克隆项目
+Read persisted outputs and acceptance truth without re-executing the task:
 
 ```bash
-git clone <your-zlagent-repo-url>
-cd ZLAgent
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite result run-001
 ```
 
-### 2. 配置环境变量
+`result.result.verified` is true only when the stored run is `completed` and the
+latest persisted acceptance decision is accepted. For an unauthenticated local
+provider, pass `--no-api-key` explicitly. `work --until-idle` processes bounded
+claimable work, with `--max-ticks` preventing an unbounded foreground loop.
+
+## Key Design Rules
+
+- Tool results must carry structured metadata, not only natural language.
+- Tool discovery is read-only and must expose tool boundaries without executing tools.
+- Mutation tools require read-before-write or an equivalent version check.
+- Externally visible message sends are confirm-tier side effects.
+- URL reads return fetched-at evidence for freshness-sensitive acceptance.
+- Complex task completion must pass `AcceptanceGate`.
+- Stage completion is local: `PlanStep` and `StepVerifier` can pass a step, but they cannot complete a task.
+- Runtime emits `plan_step_started` and `plan_step_verified` events for linear steps.
+- `TaskProgressReader.completed_steps` is derived from verified passed steps, not raw tool success.
+- `PlanDAG` validates dependency shape and linear order only; it does not schedule or parallelize.
+- `ProgramPlan` groups DAG steps into long-task phases; it does not execute them.
+- `LongTaskProjector` derives step, phase, frontier, and blocked state from append-only events, checkpoints, and pending interactions.
+- `PendingInteraction` is the durable wait point for user/operator input and carries a resume token.
+- `ContextPackBuilder` rebuilds resume context from stored state; chat history is not the source of truth.
+- `ProgramPlan` revisions are immutable, and a run cannot change its contract or plan binding.
+- Retry, alternative-tool, and approval recovery continue every unfinished verified frontier step.
+- Alternative tools satisfy the original persisted step; they cannot replace its identity, dependencies, or verification requirements.
+- Trusted runtime acceptance facts are append-only events and survive process restart.
+- `LongTaskStore` persists pending interactions, artifact records, and side-effect records; it does not replace `TaskStore`.
+- `InMemoryLongTaskStore` is the behavior baseline; `SqliteLongTaskStore` is the local durable SQL baseline.
+- `HarnessRuntime` writes tool side effects into `LongTaskStore` when one is configured; side-effect ledger writes must be idempotent by run and key.
+- Side-effect tools must declare deterministic intents before dispatch and require a durable outbox.
+- Logical side-effect keys bind run, plan revision, and original step, so retries reuse the same downstream idempotency key.
+- Outbox states are compare-and-set transitions across `planned`, `dispatching`, `applied`, `confirmed`, `failed`, `reverted`, and `uncertain`.
+- `uncertain` outcomes cannot auto-complete; reconciliation requires an explicit note and a replayable result when confirming success.
+- `RunLease` keeps worker ownership, heartbeat, retry budget, and backoff separate from `TaskRun.status`.
+- TaskStore adapters use compare-and-set for run control and exclusive worker claims.
+- `DurableWorker` only schedules; all execution, verification, recovery, and acceptance remain in `HarnessRuntime`.
+- `HarnessRuntime.submit` persists a plan and leaves the run `created`; only runtime/worker continuation executes tools.
+- Waiting-user, paused, cancelled, and terminal runs do not retain an active worker lease.
+- `ParkedRunScanner` classifies parked runs; it must not execute tools or mutate state.
+- `DagExecutionPolicy` gives conservative scheduling guidance; it must not schedule or execute DAG steps.
+- `LongTaskProgressReader` combines task progress, long-task projection, parked state, and DAG execution assessment as a read-only snapshot.
+- Long-task resume context includes contract, DAG frontier, checkpoint, open interactions, artifacts, evidence refs, recent events, and acceptance gaps.
+- Dependency-blocked steps are not executable frontier steps.
+- Failure envelopes classify perturbations by visibility and duration, such as `explicit_transient` and `implicit_permanent`.
+- Recoverable retry checkpoints can resume through `HarnessRuntime.resume_from_checkpoint`.
+- Ask-user checkpoints can resume through `HarnessRuntime.resume_with_user_approval`, then must pass step verification and acceptance again.
+- Alternative-tool checkpoints can resume only through an explicit alternative `RuntimeToolStep`.
+- Resume creates new events/checkpoints and preserves the original failure trace.
+- Non-retry recovery actions stop for user input, read-before-write, alternative tooling, or manual review unless an explicit recovery entry handles them.
+- A resumed run is not complete until `AcceptanceGate` passes again.
+- Operator controls go through `RunControlService`, not ad hoc store updates.
+- App/operator surfaces use `OperatorService` for status, pause, resume, cancel, and fork.
+- App approval surfaces use `ApprovalService` and must still pass `AcceptanceGate` after approval.
+- Pause, resume, cancel, and fork are append-only lifecycle actions with visible events.
+- Fork creates a new run with source lineage metadata; it does not copy old event history.
+- Task history should be append-only; current run status is only a projection.
+- `TaskStore` defines persistence semantics before any database adapter.
+- `SqliteTaskStore` is the local durable SQL behavior baseline.
+- `PostgresTaskStore` preserves append-only events and checkpoint semantics for PostgreSQL.
+- `HarnessRuntime` is the single deterministic lifecycle path before LLM planning is added.
+- `AgentPlanner` can produce a plan, but only `HarnessRuntime` executes tools and decides completion.
+- Model-planned tools are restricted to host-provided schemas, and model JSON cannot grant confirm-tier authority.
+- Model-planned contract ids and goals are rebound to host-owned request identity before persistence.
+- LLM output must validate into `AgentPlan` before execution.
+- Model provider adapters are thin transport boundaries; CLI keys are resolved only from an explicitly named environment variable.
+- Freshness timestamps must come from trusted runtime evidence, not model JSON.
+- Gateway/app are thin adapters around the harness, not alternate execution paths.
+- Public imports use the `re_zlagent.*` namespace; do not add top-level `app`, `gateway`, or `harness` packages.
+- Gateway delivery failures are dispatch data, not runtime acceptance decisions.
+- App bootstrap assembles components; it requires an explicit planner or model.
+- App CLI output is always JSON and uses `OperatorService` for run controls.
+- App bootstrap containers should be closed when they own durable adapters.
+- Durable memory mutations require observed versions.
+- Memory context injected into prompts is fenced and sanitized.
+- Skills are loaded read-only from bounded directories.
+- Dangerous skill text is detected before future write paths are added.
+- Trace metadata is redacted before storage.
+- Doctor reports and support bundles are redacted by default.
+- Observability records facts, not completion decisions.
+- Runtime completion must pass `AcceptanceGate`, not model prose.
+- Benchmark and realtime health checks observe runtime results; they do not replace acceptance.
+- Progress snapshots are read-only polling views over task runs, events, and checkpoints.
+- App/gateway should use the harness facade for inventory and runtime status snapshots.
+- PostgreSQL storage is an adapter, not the owner of task semantics.
+
+## Verification
+
+Install the project quality tools, then run the single release gate:
 
 ```bash
-cp .env.example .env
-$EDITOR .env
+python -m pip install -e '.[dev]'
+PYTHONPATH=src python -m re_zlagent.check
 ```
 
-至少需要配置：
-
-```env
-OPENAI_API_KEY=your-llm-api-key
-OPENAI_BASE_URL=https://api.deepseek.com
-OPENAI_MODEL=deepseek-v4-pro
-```
-
-可选：
-
-```env
-ZLAGENT_ROUTER_LLM_ENABLED=true
-ZLAGENT_ROUTER_LLM_MODEL=deepseek-v4-flash
-
-WEIXIN_BASE_URL=http://...
-```
-
-### 3. 本地启动顺序（推荐）
+Individual commands remain available for diagnosis:
 
 ```bash
-cd <OpenZLAgent>
-docker compose up -d --build
+PYTHONPATH=src python -m re_zlagent.check --skip-package
+PYTHONPATH=src python -m unittest discover -s tests
+PYTHONPATH=src python -m re_zlagent.benchmark --pretty
+ruff check src tests
+mypy src/re_zlagent
+python -m compileall src tests
+PYTHONPATH=src python -m re_zlagent.app.cli --help
+find src tests -maxdepth 5 -type f | sort
 ```
 
-会启动：
+Current tests cover:
 
-```text
-ZLAgent API      http://localhost:8020
-postgres+pgvector
-redis
-```
+- gateway message models
+- app application service
+- app bootstrap container
+- app operator service
+- app approval service
+- app JSON CLI
+- persisted submit/work/approve/result restart flow
+- app dispatcher
+- tool result metadata
+- tool discovery
+- permission policy
+- tool registry
+- read-before-write policy
+- workspace path policy
+- file tools
+- message tool
+- URL tool
+- task contracts
+- plan steps and step verification
+- static plan DAG validation
+- task event log
+- checkpoints
+- acceptance gate
+- recovery policy
+- task store
+- sqlite task store
+- postgres task store
+- long-task ledger store
+- sqlite long-task ledger store
+- parked-run recovery scanner
+- DAG safe-execution policy
+- runtime side-effect ledger integration
+- runtime lifecycle
+- runtime checkpoint resume behavior
+- runtime run-control behavior
+- agent orchestrator
+- model JSON planner
+- OpenAI-compatible model adapter
+- memory store and prompt context
+- skill loader and guard
+- observability trace recorder
+- doctor and support bundle
+- harness doctor readiness check
+- eval scenario runner and realtime health monitor
+- versioned release benchmark corpus and blocking threshold report
+- false-completion, crash replay, restart approval, and expired-lease scenarios
+- task progress reader
+- long-task projection and pending interaction state
+- context pack builder for long-task resume
+- context pack loading from long-task ledger store
+- long-task progress reader
+- harness facade inventory and runtime snapshot
+- local check command orchestration
 
-开一个单独窗口看应用主日志：
+## Next Work
+
+The core migration is closing in M21. Future product work must begin with an
+explicit roadmap decision: M19 owns bounded optional capability slices and M20
+owns safe DAG concurrency. No deferred capability should be restored wholesale
+from the legacy tag.
+
+Wiki, Graph-RAG, and geo are removed from the current target. MCP, cron, OpenGUI,
+and DAG concurrency are explicitly deferred.
+
+## Package And CLI Smoke Checks
 
 ```bash
-docker compose logs -f --tail=100 zlagent
+PYTHONPATH=src python -m re_zlagent.app.cli --help
+PYTHONPATH=src python -m re_zlagent.check --skip-package
+python -m pip install -e .
+zlagent --help
+re-zlagent-check --skip-package
 ```
-
-连接微信：
-
-```bash
-docker compose run --rm weixin-login
-```
-
-如果本机已经有 Postgres 占用了 `5432`，把 ZLAgent 的宿主机映射改到 `15432`，容器内部仍然走 `postgres:5432`：
-
-```bash
-docker compose -f docker-compose.yml -f <(printf 'services:\n  postgres:\n    ports: !override\n      - "15432:5432"\n') up -d --build
-```
-
-`docker compose` 会拉起三个服务：
-
-```text
-zlagent           http://localhost:8020
-postgres+pgvector localhost:5432  或  localhost:15432
-redis             localhost:6379
-```
-
-### 4. 启动 OpenGUI 手机执行链路
-
-如果要让 ZLAgent 操作真实 Android 手机，需要同时启动 OpenGUI backend 和 Android Client。根目录脚本会把 OpenGUI backend 跑在 `http://localhost:7777`，并让 ZLAgent 容器通过 `http://host.docker.internal:7777` 调用它：
-
-```bash
-cd <OpenZLAgent>
-./start.sh
-```
-
-第一次连接 USB 调试手机并安装 / 启动手机端：
-
-```bash
-./start.sh --with-phone
-```
-
-如果用 Android 11+ 无线调试，先在手机的“开发者选项 -> 无线调试”里取得配对端口和连接端口，然后运行：
-
-```bash
-./phone-wifi.sh pair <pair_ip:pair_port>
-./phone-wifi.sh connect <device_ip:adb_port>
-```
-
-检查 OpenGUI 设备是否在线：
-
-```bash
-./phone-wifi.sh devices
-curl http://localhost:7777/api/remote-control/devices
-```
-
-### 5. 验证
-
-```bash
-docker compose ps
-/usr/bin/curl -sS http://localhost:8020/api/health
-/usr/bin/curl -sS http://localhost:8020/api/llm/status
-/usr/bin/curl -sS -H 'Content-Type: application/json' \
-  -d '{"text":"只回复 ok"}' \
-  http://localhost:8020/api/llm/test
-```
-
-Docker 运行镜像默认只复制 `backend/`、`workspace/` 和入口脚本；如果要在容器里跑仓库测试脚本，先临时复制 `scripts/`：
-
-```bash
-docker compose exec -T -u root zlagent sh -lc 'rm -rf /app/scripts && mkdir -p /app/scripts'
-docker cp scripts/. zlagent:/app/scripts/
-docker compose exec -T -u root zlagent sh -lc 'chown -R zlagent:zlagent /app/scripts && chmod -R u=rwX,go=rX /app/scripts'
-
-docker compose exec -T zlagent python -m compileall -q backend scripts
-docker compose exec -T zlagent python scripts/smoke_llm_graph.py
-docker compose exec -T zlagent env ZLAGENT_DEMO_FAST=1 python scripts/demo_e2e.py
-docker compose exec -T zlagent python scripts/mcp_e2e_check.py
-docker compose exec -T zlagent python scripts/mcp_e2e_http_check.py
-```
-
-健康检查：`GET http://localhost:8020/api/health` → `{"status":"ok","version":"1.2.2"}`
-
-八组件自检：`GET http://localhost:8020/api/doctor`
-
-### 5. 日常监控
-
-```bash
-while true; do
-  clear
-  date
-  echo
-  docker compose ps
-  echo
-  /usr/bin/curl -fsS http://localhost:8020/api/health || echo "health check failed"
-  echo
-  echo "---- latest zlagent logs ----"
-  docker compose logs --tail=40 zlagent
-  sleep 5
-done
-```
-
-只看实时日志：
-
-```bash
-docker compose logs -f --tail=100 zlagent
-```
-
-改 `.env` 后不要只 `restart`，因为容器环境变量不会刷新。需要 recreate 主容器：
-
-```bash
-docker compose -f docker-compose.yml -f <(printf 'services:\n  postgres:\n    ports: !override\n      - "15432:5432"\n') up -d --force-recreate zlagent
-```
-
----
-
-## 使用示例
-
-### 论文查询
-
-```text
-帮我找几篇最近关于 LLM 长上下文的顶会论文
-```
-
-系统命中 `paper-search` skill，调用 arxiv + Semantic Scholar，必要时用 `web_search` 兜底，排序去重后回 IM。需要保存时，再由 `knowledge_ingest` 写入指定 knowledge mode。
-
-### 旅行规划
-
-```text
-帮我规划下周五去成都三天的行程，预算 3000
-```
-
-进入 `domains/travel/`：行程编排 → 12306 实时余票 → 路线优化；若已查过相似问题，命中 wiki 缓存直接返回。
-
-### 主动记住偏好
-
-```text
-我以后默认坐高铁不坐飞机
-```
-
-Intent Detector 识别 durable instruction，触发 background review fork 写入 `user_fact`。下次规划行程时，memory 注入会把这个偏好带回上下文。
-
-### 安装新工具
-
-```text
-我需要一个查实时航班的工具
-```
-
-Agent 检测能力缺口，从 MCP 注册表搜索候选；用户确认后走 `install_and_add` 一次完成安装与注册；可选 `promote` 把只读工具提到 safe，免后续确认。
-
-### 定时任务
-
-```text
-每天早上 8 点把昨晚的 arxiv ai 论文整理推给我
-```
-
-`cron_manage(create)` 写入定时任务，到点跑 skill，结果统一推送 IM。
-
-### 知识库写入
-
-```text
-记一下：项目 X 的截止日是 6 月 30 日，负责人是张三
-```
-
-`knowledge_ingest` 写入指定 knowledge mode 的 markdown 页，并更新 `wiki/index.md` 与 `wiki/log.md`。之后 GraphRAG 快照接口可以从这些文件构建节点和边。
-
----
-
-## 能力分层说明
-
-ZLAgent 中不同概念的职责如下：
-
-- **skills**
-  - 行为模板和任务范式
-  - 决定“怎么回答 / 怎么执行”
-
-- **memory**
-  - 用户偏好、历史上下文、长期事实
-  - 决定“记住什么”
-
-- **wiki**
-  - 可复用答案缓存
-  - 决定“什么可以直接复用”
-
-- **knowledge_modes**
-  - 面向特定主题或场景的知识库
-  - 决定“某类知识如何组织”
-
-- **graph**
-  - 从记忆和知识中抽取关系网络
-  - 决定“知识之间如何关联”
-
----
-
-## 接入 IM 渠道
-
-| 平台 | 标识 (`platform`) | 方向 | 状态 |
-|---|---|---|---|
-| 个人微信 | `weixin` | 双向 | ✅ **作者已端到端验证过**，下面给出完整步骤 |
-| 企业微信群机器人 | `wecom_bot` | 仅出 | ⚠️ 代码与接口已提供，**未实测**，请自行调试 |
-| 通用 Webhook | `webhook` | 入站测试 / 日志出站 | ⚠️ 代码与接口已提供，**未实测生产链路**，请自行调试 |
-
-### 1. 个人微信（Weixin）
-
-**实现原理**：vendored 自 Hermes Agent 的 iLink Bot 协议，扫码后用拿到的 token 长轮询拉消息。
-
-#### 一键搞定（推荐）
-
-**前提**：ZLAgent 主服务已经在跑。
-
-```bash
-docker compose -f docker-compose.yml -f <(printf 'services:\n  postgres:\n    ports: !override\n      - "15432:5432"\n') run --rm weixin-login
-```
-
-`weixin-login` 是 `docker-compose.yml` 里专门为扫码注册场景准备的一次性服务，挂 `setup` profile（默认 `up` 不启动），复用 zlagent 的 image 和 `zlagent_workspace` named volume，所以凭据直接落到主容器能看到的位置。
-
-CLI 会自动跑完整套流程：
-
-1. 终端打印二维码 → 用手机微信扫
-2. 凭据保存到 `workspace/credentials/weixin/accounts/<account_id>.json`（chmod 600）
-3. 自动 `POST /api/gateways/weixin/reload` 让 gateway 热加载新凭据
-4. 自动 `POST /api/delivery-targets` 注册一条 `platform=weixin` 的投递目标
-5. 自动 `POST /api/delivery-targets/{id}/test` 给你的微信发一条测试消息
-
-看到 `✓ 全部完成。请在微信里查收来自 iLink bot 的测试消息。` 就成了，打开微信能看到 `[ZLAgent] test message for '我的微信'`。
-
-如果最后一步测试消息超时，但前两步已经显示：
-
-```text
-[1/3] 热加载 weixin gateway 凭据... ✓ OK
-[2/3] 注册 DeliveryTarget ... ✓ OK
-```
-
-通常表示微信已经连上，只是 iLink 侧临时限流。日志里会看到 `ret=-2` 和 `rate limited`。等 1-3 分钟后手动重发即可：
-
-```bash
-/usr/bin/curl -sS -X POST http://localhost:8020/api/delivery-targets/1/test
-```
-
-只要日志里出现 `agent turn: platform=weixin` 和 `[weixin send] ... ok`，就说明微信收发链路已经通了。
-
-#### 可选参数
-
-通过 `docker compose run` 透传：
-
-```bash
-# 自定义投递目标显示名
-docker compose -f docker-compose.yml -f <(printf 'services:\n  postgres:\n    ports: !override\n      - "15432:5432"\n') run --rm weixin-login \
-  python -m backend.cli.weixin_login \
-  --api-base http://zlagent:8020 --display-name "工作微信"
-
-# 只扫码、不自动注册
-docker compose -f docker-compose.yml -f <(printf 'services:\n  postgres:\n    ports: !override\n      - "15432:5432"\n') run --rm weixin-login \
-  python -m backend.cli.weixin_login \
-  --api-base http://zlagent:8020 --no-auto-register
-```
-
-#### 手动流程（仅 `--no-auto-register` 时需要）
-
-`--no-auto-register` 跑完后 CLI 会打印手动命令，照着粘即可。或参考下面：
-
-<details>
-<summary>展开手动 curl 命令</summary>
-
-```bash
-# 1. 注册 DeliveryTarget
-/usr/bin/curl -sS -X POST http://localhost:8020/api/delivery-targets \
-  -H 'Content-Type: application/json' \
-  -d '{"platform":"weixin","target_type":"user","target_id":"<CLI 打印的 user_id>","display_name":"我的微信"}'
-
-# 2. 热加载
-/usr/bin/curl -sS -X POST http://localhost:8020/api/gateways/weixin/reload
-
-# 3. 发测试消息（id 用上一步返回的）
-/usr/bin/curl -sS -X POST http://localhost:8020/api/delivery-targets/1/test
-```
-
-</details>
-
-### 2. 企业微信群机器人（WeCom Bot） ⚠️ 未实测
-
-> 接口与代码路径都已铺好（`backend/gateways/wecom_bot.py`），作者本人未走通端到端流程。下面是按代码读出来的预期用法，**请自行调试**，遇到问题欢迎反馈。
-
-**仅 outbound**——不能接收群消息，只能往群里推。适合 cron 告警 / 知识库更新提醒。
-
-**步骤**：
-
-1. 群管理员添加群机器人，复制 webhook URL，形如：
-   ```text
-   https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<uuid>
-   ```
-
-2. 注册 DeliveryTarget，`target_id` 直接填完整 webhook URL：
-
-   ```powershell
-   $body = @{
-       platform     = "wecom_bot"
-       target_type  = "webhook"
-       target_id    = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
-       display_name = "运维告警群"
-   } | ConvertTo-Json
-
-   Invoke-RestMethod -Method Post `
-     -Uri http://localhost:8020/api/delivery-targets `
-     -ContentType "application/json" -Body $body
-   ```
-
-3. 测试：
-
-   ```powershell
-   Invoke-RestMethod -Method Post -Uri http://localhost:8020/api/delivery-targets/2/test
-   ```
-
-   群里看到 `[ZLAgent] test message for '运维告警群'` 即成功。
-
-`OutgoingMessage` 带 `rich` 时会自动渲染为 `msgtype=markdown`（粗体 / 表格 / 链接卡片原生显示），失败回退纯文本。
-
-### 3. 通用 Webhook（测试 / 自集成） ⚠️ 未实测
-
-> 接口已挂载（`backend/gateways/webhook.py` + 路由），作者本人未在生产链路里跑过。同样**请自行调试**。
-
-应用启动后自动挂载 `POST /api/gateways/webhook`。任何能发 HTTP 的客户端都可以模拟 IM 消息：
-
-```powershell
-$body = @{
-    platform = "webhook"
-    user_id  = "alice"
-    text     = "今天天气怎么样"
-} | ConvertTo-Json
-
-Invoke-RestMethod -Method Post `
-  -Uri http://localhost:8020/api/gateways/webhook `
-  -ContentType "application/json" -Body $body
-```
-
-返回 `{"status":"accepted","message_id":"..."}`，agent 处理完之后把回复打到 `zlagent` 容器 stderr（webhook 是 push-only 没有真实 outbound 通道）。可用于跑 e2e 测试 / 自己接其它 IM。
-
-### 4. 排查清单
-
-| 现象 | 排查点 |
-|---|---|
-| `weixin reload` 报 `gateway not registered` | `pip install aiohttp cryptography qrcode`（缺一不可） |
-| 扫码后 CLI 卡死 480s | 网络无法访问 `ilinkai.weixin.qq.com`，需放行 |
-| 测试消息超时，日志里 `ret=-2` | iLink 临时限流；等 1-3 分钟后 `POST /api/delivery-targets/{id}/test` 重试 |
-| 发消息 errcode=-14 | session 过期，gateway 会自动重连一次；连续多次失败需重新跑 `weixin_login` |
-| DeepSeek / OpenAI key 明明改了但仍报旧 key 401 | `docker compose restart` 不刷新 env；用 `up -d --force-recreate zlagent` |
-| WeCom 群机器人 errcode!=0 | 看 `workspace/logs` 或 `docker compose logs zlagent`；常见原因：webhook key 拼错 / 群机器人被禁用 / 频率超限 |
-| `/api/delivery-targets/{id}/test` 502 | gateway 没注册成功，先看 `/api/gateways` 列表里是否含目标 platform |
-
-健康概览：`GET /api/gateways` 列出所有已注册 gateway 的 kind / configured / 收发计数。
-
----
-
-## API 概览
-
-| 功能 | 方法 | 路径 |
-|---|---|---|
-| 健康检查 | GET | `/api/health` |
-| 八组件自检 | GET | `/api/doctor` |
-| 运行时概览 | GET | `/api/runtime` |
-| 网关列表与计数 | GET | `/api/gateways` |
-| 记忆 CRUD | GET/POST/DELETE | `/api/memory` |
-| 记忆 pin / archive | POST | `/api/memory/{id}/pin` |
-| 技能列表 | GET | `/api/skills` |
-| 技能审查触发 | POST | `/api/curator/run` |
-| 定时任务 CRUD | GET/POST/DELETE | `/api/cron` |
-| 投递目标 | GET/POST | `/api/delivery-targets` |
-| 等待确认 | GET | `/api/confirmations` |
-| 工具列表 | GET | `/api/tools` |
-| 工具直测 | POST | `/api/tools/{name}/test` |
-| LLM 状态 | GET | `/api/llm/status` |
-| LLM 连通性测试 | POST | `/api/llm/test` |
-| MCP server 列表 | GET | `/api/mcp/servers` |
-| MCP 工具列表 | GET | `/api/mcp/tools` |
-| MCP server 注册 | POST | `/api/mcp/servers` |
-| MCP server 删除 | DELETE | `/api/mcp/servers/{name}` |
-| MCP server 重连 | POST | `/api/mcp/servers/{name}/reconnect` |
-| MCP 安装 | POST | `/api/mcp/install` |
-| MCP 安装 + 注册 | POST | `/api/mcp/install_and_add` |
-| 已安装包列表 | GET | `/api/mcp/installed?package_manager=npm` |
-| 知识库列表 | GET | `/api/knowledge-bases` |
-| 知识库图谱 | GET | `/api/knowledge-bases/{id}/graph` |
-| 图谱重抽取 | POST | `/api/knowledge-bases/{id}/rebuild-graph` |
-| 论文批量导入 | POST | `/api/knowledge-bases/{id}/papers/import` |
-| GraphRAG 总览 | GET | `/api/graph-rag` |
-| Wiki 缓存查询 | GET | `/api/wiki` |
-| Review 状态 / 触发 | GET/POST | `/api/review/state` / `/api/review/run` |
-| 维护任务 | POST | `/api/maintenance/run` |
-| 夜间图谱任务 | POST | `/api/nightly/graph/run` |
-| 插件列表 | GET | `/api/plugins` |
-
----
-
-## 版本状态说明
-
-- **已验证**：Docker 三服务启动、微信接入、LLM 连通性、离线 demo、GraphRAG smoke、MCP stdio/http 端到端脚本
-- **部分验证**：企业微信群机器人、通用 Webhook、部分知识模式
-
-知识写入相关边界：
-
-- **wiki 不是启动后天然有内容**：`backend/wiki/`、crystallizer 和 `/api/wiki` 存在，但需要技能配置、知识写入或复盘链路触发；干净环境里 `/api/wiki` 返回空列表是正常状态。
-- **GraphRAG smoke 验证的是快照链路**：当前 smoke 主要验证 LLM extractor、cache、builder 和快照生成；GraphRAG dashboard 读取的是运行时构建的 snapshot。
-
----
-
-## 阅读路径
-
-如果想理解架构，不建议从目录树开始读。更好的顺序是：
-
-| 想理解什么 | 先看哪里 | 读完应该明白 |
-|---|---|---|
-| 系统怎么启动 | `backend/app.py` + `backend/bootstrap/` | FastAPI lifespan 如何组装运行时、路由、网关和后台服务 |
-| 每轮对话怎么跑 | `backend/agent/loop.py` + `backend/agent/turn_preparer/` | 用户消息如何变成一次 turn，模型如何决定回复或调用工具 |
-| 上下文怎么管理 | `backend/agent/context/` | 长对话如何压缩、记忆如何注入、turn scope 如何隔离 |
-| 工具为什么安全 | `backend/tools/` + `backend/agent/confirmation/` | 能力如何注册，什么时候直接执行，什么时候需要用户确认 |
-| MCP 怎么接入 | `backend/mcp/` | 外部 server 如何安装、连接、暴露成工具、进入权限体系 |
-| 知识怎么写入 | `backend/memory/` + `backend/wiki/` + `backend/tools/builtins/knowledge_ingest.py` + `backend/graph/` | 偏好、答案缓存、文件知识库和图谱快照如何分层 |
-| 微信怎么接入 | `backend/gateways/weixin.py` + `backend/cli/weixin_login.py` | 扫码凭据、热加载、收消息、发回复的链路 |
-
-这比完整目录树更接近项目真实结构：ZLAgent 是围绕一次 agent turn 组织起来的，不是按文件夹平铺出来的。
-
----
-
-## 验证与质量
-
-```bash
-docker compose exec -T -u root zlagent sh -lc 'rm -rf /app/scripts && mkdir -p /app/scripts'
-docker cp scripts/. zlagent:/app/scripts/
-docker compose exec -T -u root zlagent sh -lc 'chown -R zlagent:zlagent /app/scripts && chmod -R u=rwX,go=rX /app/scripts'
-
-docker compose exec -T zlagent python -m compileall -q backend scripts
-docker compose exec -T zlagent python scripts/smoke_llm_graph.py
-docker compose exec -T zlagent python scripts/mcp_e2e_check.py
-docker compose exec -T zlagent python scripts/mcp_e2e_http_check.py
-docker compose exec -T zlagent env ZLAGENT_DEMO_FAST=1 python scripts/demo_e2e.py
-```
-
----
-
-## 配置项
-
-完整字段见 `backend/core/config.py`。所有项支持环境变量覆盖（前缀 `ZLAGENT_` 或工具自带前缀如 `OPENAI_`）。
-
-```env
-# LLM
-OPENAI_API_KEY=
-OPENAI_BASE_URL=
-OPENAI_MODEL=
-
-# 可选 intent router（Flash 小模型预筛）
-ZLAGENT_ROUTER_LLM_ENABLED=false
-ZLAGENT_ROUTER_LLM_MODEL=
-
-# 记忆
-ZLAGENT_MEMORY_MAX_ENTRIES=200
-ZLAGENT_MEMORY_MAX_ENTRY_CHARS=500
-
-# 工具安全
-ZLAGENT_TOOL_GUARDRAILS_HARD_STOP_ENABLED=true
-ZLAGENT_SKILL_GUARD_ENABLED=true
-ZLAGENT_SKILL_GUARD_STRICT_FOR_AGENT=true
-
-# 上下文压缩
-ZLAGENT_CONTEXT_SUMMARY_ENABLED=true
-ZLAGENT_CONTEXT_SUMMARY_THRESHOLD_CHARS=49152
-
-# GraphRAG
-ZLAGENT_GRAPH_LLM_ENABLED=true
-
-# 后端服务
-DATABASE_URL=postgresql+psycopg://zlagent:zlagent@postgres:5432/zlagent
-ZLAGENT_REDIS_URL=redis://redis:6379/0
-
-# MCP
-ZLAGENT_MCP_ENABLED=true
-
-# 网页搜索（全部可选；不配也能跑 DuckDuckGo + Bing）
-TAVILY_API_KEY=
-ZLAGENT_SEARXNG_URL=
-```
-
----
-
-## License
-
-本仓库不是单一许可证覆盖所有目录：
-
-- ZLAgent 根项目自研代码以 **MIT License** 发布，见 [LICENSE](./LICENSE)。
-- `OpenGUI-main/` 保留 OpenGUI 原始许可，使用 **Business Source License 1.1 (BUSL-1.1)**，见 [OpenGUI-main/LICENSE](./OpenGUI-main/LICENSE)。
-- OpenGUI 的 BUSL 参数为：Licensor `Core-Mate`，Change Date `2030-04-29`，Change License `Apache License, Version 2.0`。
-- 在 Change Date 前，OpenGUI 允许复制、修改、再分发和非生产使用；生产使用、商业使用、托管服务或集成进商业产品，需要 Core-Mate 的单独商业授权。
-- ZLAgent 的 MIT License 不会重新授权 `OpenGUI-main/`，也不会解除 OpenGUI BUSL-1.1 的限制。
-
-项目设计参考了以下开源项目，公开发布时请遵守各自的许可与署名要求：
-
-- **[learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)**（MIT，shareAI-lab）
-  - **架构参考**：参考它逐步搭建 Agent 的思路，包括主流程、工具、权限、技能加载、记忆、失败处理、后台任务、定时任务和 MCP 扩展；ZLAgent 把这些思路改成 IM 常驻助理场景，而不是照搬代码
-- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**（MIT，© 2025 Nous Research）
-  - **代码 vendored**：`backend/gateways/_vendor/weixin_ilink.py` 是 Hermes `gateway/platforms/weixin.py` 的 iLink Bot 协议精简移植（MIT 协议文头已内嵌）
-  - **设计参考、Python 重新实现**：参考长期记忆、工具安全、历史压缩、技能管理、定时任务和部分技能设计；相关实现主要在 `backend/memory/`、`backend/agent/`、`backend/tools/`、`workspace/skills/`
-- **[OpenClaw](https://github.com/openclaw/openclaw)**（MIT，© 2026 OpenClaw Foundation）
-  - **代码参考 / 部分常量移植**：`backend/mcp/lifecycle.py` 中的 MCP 子进程环境变量拦截清单来自 OpenClaw `host-env-security-policy.json`
-  - **设计参考、Python 重新实现**：参考工具安全分级、危险操作确认和 MCP 安装安全策略，位于 `backend/tools/` 与 `backend/mcp/`
-- **[nvk/llm-wiki](https://github.com/nvk/llm-wiki)**（MIT，© 2026 nvk）
-  - **设计参考、Python 重新实现**：参考“能复用就不要重复生成”的 wiki 缓存思路，并实现事实抽取、来源记录、置信度和概念页整理，主要在 `backend/wiki/` 与 `backend/skills/`
-- **[andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills)**（上游 README / plugin metadata 标注 MIT，Forrest Chang 整理自 [Andrej Karpathy 推文](https://x.com/karpathy/status/2015883857489522876)）
-  - **提示词参考**：四条原则（Think Before Coding / Simplicity First / Surgical Changes / Goal-Driven Execution）译写为中文常量，用在系统提示词和技能复盘提示词里
-
-第三方来源、vendored 文件和许可证要求集中登记在 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。公开发布时不要删除上游版权声明、许可证文本或 `OpenGUI-main/LICENSE`。
-
----
-
-## 引用 / 集成组件清单
-
-本节把当前仓库实际引用、集成或预留配置的 OpenGUI、Android、MCP 和外部工具集中列出，便于公开发布前检查协议边界。
-
-### OpenGUI 与手机执行链路
-
-| 组件 | 是否随仓库包含 | 位置 | 用途 | 协议 / 边界 |
-|---|---|---|---|---|
-| OpenGUI | 是 | `OpenGUI-main/` | Android GUI agent 子系统，负责真实手机屏幕观察、任务执行和 execution 状态管理 | BUSL-1.1，见 `OpenGUI-main/LICENSE` |
-| OpenGUI Backend | 是 | `OpenGUI-main/server/` | NestJS / LangGraph 后端，提供 `/api/remote-control/*`、standby socket、execution socket、Plan Supervisor / Executor Graph | 继承 OpenGUI BUSL-1.1 |
-| OpenGUI Android Client | 是 | `OpenGUI-main/client/` | Android 设备端，负责截图、结构化状态、无障碍动作执行、悬浮窗和 standby 连接 | 继承 OpenGUI BUSL-1.1 |
-| ZLAgent `open_gui` 工具 | 是 | `backend/tools/builtins/open_gui.py` | ZLAgent 到 OpenGUI 的桥接工具，支持设备列表、绑定、打开 App、点击、执行任务、查询 / 暂停 / 恢复 / 取消 execution | ZLAgent MIT；调用 OpenGUI 时仍受 OpenGUI BUSL 限制 |
-| OpenGUI REST Client | 是 | `backend/opengui/client.py` | 调用 OpenGUI backend 的 async HTTP client | ZLAgent MIT |
-| 设备绑定表 | 是 | `backend/db/models.py` / `backend/db/gui_devices.py` | 按 `platform + user_id` 保存默认 Android 设备 | ZLAgent MIT |
-| 启动 / 连接脚本 | 是 | `start.sh` / `status.sh` / `phone-wifi.sh` / `scripts/opengui-supervisor.sh` | 启动 OpenGUI backend、检查状态、ADB reverse、无线调试配对和连接 | ZLAgent MIT；依赖 Android platform-tools / adb |
-
-### Android 侧主要依赖
-
-OpenGUI Android Client 使用 Android SDK、Gradle、Kotlin 和常见 Android 库。它们不是由 ZLAgent 重新授权，仍遵循各自上游许可证。
-
-| 类型 | 组件 / 依赖 | 来源位置 | 用途 |
-|---|---|---|---|
-| Android 构建 | Android Gradle Plugin、Gradle、Kotlin、KSP | `OpenGUI-main/client/gradle/libs.versions.toml` | Android 多模块构建、Kotlin 编译、符号处理 |
-| AndroidX / UI | AndroidX Core、Activity、Fragment、Lifecycle、AppCompat、RecyclerView、ViewPager2、ConstraintLayout、Compose BOM、Material / Material3 | `OpenGUI-main/client/gradle/libs.versions.toml` | Android App 基础 UI、生命周期和 Compose / View 组件 |
-| 网络通信 | OkHttp、OkHttp SSE、Retrofit、Gson、socket.io-client | `OpenGUI-main/client/gradle/libs.versions.toml` | HTTP、SSE、WebSocket / Socket.IO、JSON 序列化 |
-| 本地存储 | Tencent MMKV | `OpenGUI-main/client/gradle/libs.versions.toml` | Android 本地配置和状态存储 |
-| 测试 | JUnit、AndroidX Test、Espresso | `OpenGUI-main/client/gradle/libs.versions.toml` | Android 单测 / 仪器测试 |
-| 系统能力 | Android AccessibilityService、MediaProjection / screenshot、PackageManager / launch intent、ADB、Wireless debugging、`adb reverse tcp:7777` | Android 系统 / `phone-wifi.sh` / OpenGUI Android Client | 应用枚举、按包名启动应用、截图、无障碍动作、调试连接、本机 backend 端口转发 |
-
-### MCP 与外部工具链
-
-ZLAgent 支持 MCP（Model Context Protocol）作为外部工具接入方式。MCP server 通过 `config/mcp_servers.yaml` 配置，运行时由 `npx` / `uvx` 下载或启动，相关 server 和包遵守各自上游许可证。
-
-| 组件 | 是否默认启用 | 配置位置 | 用途 | 备注 |
-|---|---|---|---|---|
-| Python MCP SDK `mcp` | 是，作为依赖 | `requirements.txt` | ZLAgent MCP client，负责 stdio / HTTP MCP 会话 | Python 包遵守其上游许可证 |
-| `open-websearch` MCP | 是，当前配置启用 | `config/mcp_servers.yaml` | 多搜索引擎检索与网页内容抓取 | 通过 `npx open-websearch@latest` 启动 |
-| `@modelcontextprotocol/server-filesystem` | 否，示例配置 | `config/mcp_servers.yaml` | 文件系统 MCP 工具 | 示例保留，启用后需遵守上游许可证 |
-| `@playwright/mcp` | 否，示例配置 | `config/mcp_servers.yaml` | 浏览器自动化 MCP 工具 | 示例保留，默认不启用 |
-| `@modelcontextprotocol/server-github` | 否，示例配置 | `config/mcp_servers.yaml` | GitHub issue / PR / commit 工具 | 需要 `GITHUB_TOKEN` |
-| `mcp-server-youtube-transcript` / `yt-dlp` | 否，示例配置；`yt-dlp` 在 Python 依赖中预留 | `config/mcp_servers.yaml` / `requirements.txt` | YouTube 字幕 / transcript 抽取 | 启用后遵守对应包许可证 |
-| `@larksuiteoapi/lark-mcp` | 否，示例配置 | `config/mcp_servers.yaml` | 飞书 / Lark 工具 | 需要 Feishu app credentials |
-| `mcp-server-markitdown` | 否，示例配置 | `config/mcp_servers.yaml` | PDF / Office 文档转 Markdown | 通过 `uvx` 启动 |
-| `@modelcontextprotocol/server-sequential-thinking` | 否，示例配置 | `config/mcp_servers.yaml` | 结构化思考辅助 | 只读工具可提升为 safe |
-| `mcp-server-fetch` | 否，示例配置 | `config/mcp_servers.yaml` | URL 到 Markdown 抽取 | 通过 `uvx` 启动 |
-| `@modelcontextprotocol/server-memory` | 否，示例配置 | `config/mcp_servers.yaml` | MCP portable knowledge graph memory | 与 ZLAgent 自身 memory 分离 |
-| `mcp-server-time` | 否，示例配置 | `config/mcp_servers.yaml` | 当前时间和时区转换 | 通过 `uvx` 启动 |
-
-### OpenGUI server 侧主要 Node 依赖
-
-| 组件 | 来源位置 | 用途 |
-|---|---|---|
-| Node.js 22+ / pnpm | `OpenGUI-main/server/package.json` | OpenGUI backend 构建和运行 |
-| TypeScript / Turbo / Biome | `OpenGUI-main/server/package.json` | 类型检查、monorepo 构建、格式和 lint |
-| `@larksuiteoapi/node-sdk` | `OpenGUI-main/server/package.json` | OpenGUI IM channel / Feishu 能力 |
-| `grammy` | `OpenGUI-main/server/package.json` | Telegram bot 能力 |
-| `streamdown` | `OpenGUI-main/server/package.json` | Markdown / stream rendering 辅助 |
-
-### ZLAgent Python 侧主要依赖
-
-| 组件 | 来源位置 | 用途 |
-|---|---|---|
-| FastAPI / Uvicorn | `requirements.txt` | ZLAgent HTTP API |
-| SQLAlchemy / Pydantic / pydantic-settings | `requirements.txt` | ORM、schema、配置管理 |
-| PostgreSQL + pgvector | `docker-compose.yml` | 主数据和向量扩展 |
-| Redis / fakeredis | `requirements.txt` / `docker-compose.yml` | 会话、缓存和测试替身 |
-| httpx / aiohttp / cryptography / qrcode | `requirements.txt` | HTTP client、微信 iLink、二维码登录 |
-| croniter | `requirements.txt` | 定时任务调度 |
-| PyYAML | `requirements.txt` | MCP 和配置文件解析 |
-| yt-dlp | `requirements.txt` | YouTube transcript MCP 相关预留依赖 |
-
-如果后续新增 Android SDK、MCP server、OpenGUI 子模块、外部源码或直接复制的策略表，请同步更新本节和 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。

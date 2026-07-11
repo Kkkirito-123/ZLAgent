@@ -1,55 +1,23 @@
-# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
-venv/
+.DS_Store
 .env
 .env.*
 !.env.example
-
-# Editors / OS
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-
-# Runtime data (persisted via docker volumes)
-data/
-config/local.yaml
-workspace/credentials/
-workspace/files/
-workspace/knowledge/
-workspace/knowledge_modes/
-workspace/logs/
-workspace/memory/
-workspace/runtime/
-workspace/tmp/
-workspace/skills/.usage.json
-workspace/.zlagent/
-
-# Build / packaging
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.swp
+*.swo
+.coverage
+htmlcov/
 build/
 dist/
-node_modules/
-.gradle/
-*.apk
-*.aab
-*.keystore
-*.jks
-.runner.txt.swp
-
-# OpenGUI local caches
-OpenGUI-main/server/.pnpm-store/
-OpenGUI-main/server/apps/backend/uploads/
-OpenGUI-main/server/apps/backend/.env
-OpenGUI-main/client/local.properties
-
-# Logs / DB
-*.log
-*.pid
-*.jsonl
+.zlagent/
+/workspace/logs/
+/workspace/runtime/
 *.db
-*.db-journal
 *.sqlite
 *.sqlite3
