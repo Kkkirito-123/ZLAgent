@@ -41,7 +41,7 @@ dependencies {
     implementation(project(":core_common"))
     implementation(project(":core_common_jvm"))
     implementation(project(":core_network"))
-    implementation("com.tencent:mmkv:2.2.4")
+    implementation(libs.mmkv)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

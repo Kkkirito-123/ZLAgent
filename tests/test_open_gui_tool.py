@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from contextlib import contextmanager
 from datetime import datetime
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -12,8 +13,10 @@ from sqlalchemy.orm import sessionmaker
 from backend.db.gui_devices import GuiDeviceBindingStore
 from backend.db.models import Base
 from backend.opengui.client import OpenGUIClient
+from backend.agent.context import TurnContext, set_turn_context
 from backend.tools.registry import ToolRegistry
 from backend.tools.builtins.open_gui import OpenGUITool
+from backend.tools.builtins.tool_search import ToolSearchTool
 
 
 class FakeResponse:
@@ -205,6 +208,62 @@ class OpenGUIToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(FakeAsyncClient.requests[2]["json"]["deviceId"], "phone-1")
         self.assertTrue(FakeAsyncClient.requests[3]["url"].endswith("/executions/9"))
 
+    async def test_devices_bootstraps_local_adb_when_initially_empty(self):
+        FakeAsyncClient.queue = [
+            {"devices": [], "total": 0},
+            {"devices": [{"deviceId": "phone-1", "deviceName": "Pixel"}], "total": 1},
+        ]
+        bootstrap_calls = []
+
+        async def fake_bootstrap(base_url):
+            bootstrap_calls.append(base_url)
+            return SimpleNamespace(attempted=True, message="adb reverse tcp:7777 OK")
+
+        async def no_sleep(_seconds):
+            return None
+
+        tool = OpenGUITool(base_url="http://127.0.0.1:7777", timeout_seconds=3)
+        with patch("backend.opengui.client.httpx.AsyncClient", FakeAsyncClient), \
+            patch("backend.tools.builtins.open_gui._bootstrap_local_android", fake_bootstrap), \
+            patch("backend.tools.builtins.open_gui.asyncio.sleep", no_sleep):
+            result = await tool.execute({"action": "devices"})
+
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("OpenGUI online devices", result.content)
+        self.assertEqual(bootstrap_calls, ["http://127.0.0.1:7777"])
+        self.assertEqual(len(FakeAsyncClient.requests), 2)
+
+    async def test_devices_waits_for_slow_android_cold_start(self):
+        FakeAsyncClient.queue = [
+            {"devices": [], "total": 0},
+            {"devices": [], "total": 0},
+            {"devices": [], "total": 0},
+            {"devices": [], "total": 0},
+            {"devices": [], "total": 0},
+            {"devices": [], "total": 0},
+            {"devices": [{"deviceId": "phone-1", "deviceName": "Pixel"}], "total": 1},
+        ]
+        bootstrap_calls = []
+        sleep_calls = []
+
+        async def fake_bootstrap(base_url):
+            bootstrap_calls.append(base_url)
+            return SimpleNamespace(attempted=True, message="adb reverse tcp:7777 OK")
+
+        async def no_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        tool = OpenGUITool(base_url="http://127.0.0.1:7777", timeout_seconds=3)
+        with patch("backend.opengui.client.httpx.AsyncClient", FakeAsyncClient), \
+            patch("backend.tools.builtins.open_gui._bootstrap_local_android", fake_bootstrap), \
+            patch("backend.tools.builtins.open_gui.asyncio.sleep", no_sleep):
+            result = await tool.execute({"action": "devices"})
+
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("OpenGUI online devices", result.content)
+        self.assertEqual(bootstrap_calls, ["http://127.0.0.1:7777"])
+        self.assertEqual(sleep_calls, [2.0, 2.0, 2.0, 2.0, 2.0, 2.0])
+
     async def test_bind_accepts_device_name_as_device_id(self):
         FakeAsyncClient.queue = [
             {"devices": [{"deviceId": "phone-1", "deviceName": "Samsung SM-S9280"}], "total": 1},
@@ -303,6 +362,52 @@ class OpenGUIToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.ok, result.error)
         self.assertEqual(FakeAsyncClient.requests[0]["method"], "POST")
         self.assertIn("打开网易云音乐", FakeAsyncClient.requests[0]["json"]["description"])
+
+    async def test_do_retries_after_local_bootstrap_when_bound_device_is_offline(self):
+        FakeAsyncClient.queue = [
+            FakeResponse({"message": 'Device "phone-1" is not online'}, status_code=400),
+            {"devices": [], "total": 0},
+            {"devices": [{"deviceId": "phone-1", "deviceName": "Pixel"}], "total": 1},
+            {"success": True, "executionId": 15, "taskId": 8},
+        ]
+        bootstrap_calls = []
+
+        async def fake_bootstrap(base_url):
+            bootstrap_calls.append(base_url)
+            return SimpleNamespace(attempted=True, message="adb reverse tcp:7777 OK")
+
+        async def no_sleep(_seconds):
+            return None
+
+        with isolated_gui_store() as store:
+            store.bind(
+                platform="weixin",
+                user_id="u1",
+                opengui_base_url="http://127.0.0.1:7777",
+                device_id="phone-1",
+                device_name="Pixel",
+                verified_at=datetime.utcnow(),
+            )
+            tool = OpenGUITool(
+                base_url="http://127.0.0.1:7777",
+                timeout_seconds=3,
+                binding_store=store,
+            )
+
+            with patch("backend.opengui.client.httpx.AsyncClient", FakeAsyncClient), \
+                patch("backend.tools.builtins.open_gui._bootstrap_local_android", fake_bootstrap), \
+                patch("backend.tools.builtins.open_gui.asyncio.sleep", no_sleep):
+                result = await tool.execute({
+                    "action": "do",
+                    "platform": "weixin",
+                    "user_id": "u1",
+                    "task": "打开网易云音乐",
+                })
+
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(bootstrap_calls, ["http://127.0.0.1:7777"])
+        self.assertEqual([request["method"] for request in FakeAsyncClient.requests], ["POST", "GET", "GET", "POST"])
+        self.assertEqual(FakeAsyncClient.requests[-1]["json"]["deviceId"], "phone-1")
 
     async def test_apps_lists_bound_device_apps(self):
         FakeAsyncClient.queue = [
@@ -471,6 +576,37 @@ class OpenGUIToolTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.ok, result.error)
         self.assertEqual(FakeAsyncClient.requests[-1]["method"], "POST")
+
+
+class OpenGUIToolSearchGateTest(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_search_hides_open_gui_without_explicit_phone_phrase(self):
+        registry = ToolRegistry()
+        registry.register(OpenGUITool(base_url="http://host:7777", timeout_seconds=3))
+        tool_search = ToolSearchTool(registry)
+
+        with set_turn_context(TurnContext(user_message="打开网易云音乐，播放林俊杰的歌")):
+            result = await tool_search.execute({
+                "query": "手机 安卓 打开app 网易云 播放",
+                "include_loaded": True,
+            })
+
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.raw, {"activate_tools": []})
+        self.assertNotIn("open_gui", result.content)
+
+    async def test_tool_search_exposes_open_gui_with_explicit_phone_phrase(self):
+        registry = ToolRegistry()
+        registry.register(OpenGUITool(base_url="http://host:7777", timeout_seconds=3))
+        tool_search = ToolSearchTool(registry)
+
+        with set_turn_context(TurnContext(user_message="请你用手机打开网易云音乐，播放林俊杰的歌")):
+            result = await tool_search.execute({
+                "query": "手机 安卓 打开app 网易云 播放",
+            })
+
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.raw, {"activate_tools": ["open_gui"]})
+        self.assertIn("open_gui", result.content)
 
 
 if __name__ == "__main__":

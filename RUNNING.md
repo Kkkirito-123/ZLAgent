@@ -39,14 +39,47 @@ docker compose run --rm weixin-login
 
 ---
 
+## 当前本地启动顺序
+
+只启动 ZLAgent 主服务：
+
+```bash
+cd <OpenZLAgent>
+docker compose up -d --build
+```
+
+窗口 1 查看应用主日志：
+
+```bash
+docker compose logs -f --tail=100 zlagent
+```
+
+链接微信：
+
+```bash
+docker compose run --rm weixin-login
+```
+
+连接 Android 无线调试手机时，把占位符替换为手机“无线调试”页面显示的地址和端口：
+
+```bash
+cd <OpenZLAgent>
+./phone-wifi.sh pair <pair_ip:pair_port>
+./phone-wifi.sh connect <device_ip:adb_port>
+```
+
+注意：`phone-wifi.sh` 只负责 ADB 配对、`adb reverse tcp:7777`、拉起手机端和查看设备。OpenGUI backend 需要已经通过 `./start.sh` 或其他方式运行在 `http://localhost:7777`。
+
+---
+
 ## 0. 前置依赖
 
 | 依赖 | 版本 | 必需 | 说明 |
 |---|---|---|---|
 | Python | 3.11+ | ✅ | 本地直跑必需 |
-| Docker Desktop | 最新 | 推荐 | 一键拉起 zlagent + postgres + neo4j + redis |
+| Docker Desktop | 最新 | 推荐 | 一键拉起 zlagent + postgres + redis |
 | Git | 任意 | ✅ | 克隆代码 |
-| Node.js / npm | 18+ | 可选 | 装 npm 类 MCP server 时需要 |
+| Node.js / npm | 22+ | 推荐 | OpenGUI backend 和 npm 类 MCP server 需要 |
 | `uv` / `uvx` | 可选 | 可选 | 装 Python 类 MCP server 用 |
 
 LLM API key（DeepSeek / Qwen / OpenAI 任一兼容服务）— 不配也能起，但 agent 只能 echo。
@@ -89,13 +122,12 @@ OPENAI_MODEL=deepseek-chat
 docker compose up -d --build
 ```
 
-会拉起四个容器：
+会拉起三个容器：
 
 | 服务 | 端口 | 用途 |
 |---|---|---|
 | `zlagent` | 8020 | 主应用 FastAPI |
 | `zlagent-postgres` | 5432 | 业务数据 + pgvector |
-| `zlagent-neo4j` | 7474 (web) / 7687 (bolt) | GraphRAG 知识图谱 |
 | `zlagent-redis` | 6379 | 会话 / 缓存 LRU |
 
 打开 `http://localhost:8020/api/health`，应返回 `{"status":"ok","version":"1.2.2"}`。
@@ -109,7 +141,7 @@ pip install -r requirements.txt
 python -m backend.app
 ```
 
-不带 GraphRAG / Postgres：自动落回 `data/zlagent.db` SQLite，Neo4j / Redis 缺失时相应能力降级，**不影响主对话流程**。
+不带 Postgres 时会自动落回 `data/zlagent.db` SQLite；Redis 缺失时相应缓存能力降级，**不影响主对话流程**。当前 GraphRAG 是从 memory、knowledge mode 文件和 graph cache 构建快照，不再依赖 Neo4j。
 
 ---
 
@@ -243,7 +275,7 @@ Get-Content workspace\memory\session_context.jsonl -Wait -Tail 20
 |---|---|
 | `/api/health` 502 | `docker compose ps`，`zlagent` 容器是否 healthy |
 | `/api/doctor` 显示 LLM down | `.env` 里 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` 三项是否都填 |
-| GraphRAG 节点为空 | Neo4j 容器是否启动（`docker compose logs neo4j`）；`ZLAGENT_GRAPH_LLM_ENABLED=true` |
+| GraphRAG 节点为空 | 是否有 memory / knowledge mode / runtime records；是否设置 `ZLAGENT_GRAPH_LLM_ENABLED=true` |
 | MCP 工具装不上 | `workspace/logs/mcp-install.log` 看 npm / pip 真实报错；网络 / 包名 / `--ignore-scripts` |
 | MCP 工具装上但调用 fail | `workspace/logs/mcp-stderr.log` 看子进程异常 |
 | 微信收不到回复 | `docker compose logs zlagent | findstr weixin`；检查 `WEIXIN_BASE_URL` / Webhook 签名 |
@@ -278,7 +310,7 @@ docker compose down -v
 Remove-Item -Recurse -Force workspace\logs\*, data\zlagent.db -ErrorAction SilentlyContinue
 ```
 
-⚠️ **不可逆**：会清空所有长期记忆、cron 任务、MCP server 配置、知识库、知识图谱。
+⚠️ **不可逆**：会清空所有长期记忆、cron 任务、MCP server 配置、知识库和图谱缓存。
 
 ---
 

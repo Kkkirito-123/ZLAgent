@@ -6,7 +6,7 @@
 
 📺 **项目演示视频**：[bilibili.com/video/BV1bc5S6dEq6](https://www.bilibili.com/video/BV1bc5S6dEq6/)
 
-项目基于 `FastAPI`、`PostgreSQL + pgvector`、`Redis`、`MCP` 和 OpenAI 兼容大模型构建。系统采用 **先识别意图与技能，再注入记忆与上下文，再调用工具执行，最后按代码规则写入记忆、wiki cache 或文件型知识库** 的流程，可在微信 / Webhook 等 IM 场景下完成论文查询、旅游规划、日报订阅、定时任务、记忆管理、知识库写入和工具扩展。
+项目基于 `FastAPI`、`PostgreSQL + pgvector`、`Redis`、`MCP`、OpenAI 兼容大模型和 [OpenGUI](./OpenGUI-main) 构建。系统采用 **先识别意图与技能，再注入记忆与上下文，再调用工具执行，最后按代码规则写入记忆、wiki cache 或文件型知识库** 的流程，可在微信 / Webhook 等 IM 场景下完成论文查询、旅游规划、日报订阅、定时任务、记忆管理、知识库写入、工具扩展和真实 Android 手机操作。
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-green)
@@ -14,8 +14,207 @@
 ![Redis](https://img.shields.io/badge/Redis-7.x-DC382D)
 ![MCP](https://img.shields.io/badge/MCP-Tools-black)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED)
-![License](https://img.shields.io/badge/License-MIT-informational)
+![License](https://img.shields.io/badge/License-MIT_%2B_BUSL--1.1-informational)
 ![Version](https://img.shields.io/badge/version-1.2.2-blue)
+
+---
+
+## 本次大更新：ZLAgent × OpenGUI 手机操作协同
+
+本次更新把 [OpenGUI](./OpenGUI-main) 接入 ZLAgent 主流程。ZLAgent 不再只是在 IM 里聊天、查资料、调用普通工具，也可以把真实 Android 手机上的操作任务纳入同一套对话、工具、记忆、权限和 skill 管理体系。
+
+一句话概括：
+
+```text
+ZLAgent 负责理解、规划、记忆和安全边界；
+OpenGUI 负责看见手机屏幕并在真实 Android 设备上执行；
+Android Client 负责截图、状态上报、动作落地和设备通信。
+```
+
+这不是把手机屏幕“直接交给视觉模型”，而是把手机操作变成 ZLAgent 主流程里的一个受控工具：先由主 Agent 判断任务意图、风险和停止条件，再交给 OpenGUI 子 Agent 执行，最后把执行状态、结果和失败信息回到 ZLAgent。
+
+手机执行器的确定性触发词只有 `请你用手机`。用户只说 App 名、歌曲名、`播放`、`打开网易云` 等普通表达时，不会靠关键词直接激活手机执行；这些请求会先按普通对话交给 LLM 判断，必要时再询问用户是否要使用手机。
+
+### 架构分工
+
+| 组件 | 定位 | 负责内容 |
+|---|---|---|
+| ZLAgent | 主 Agent | 接收微信 / Webhook 消息，理解用户意图，拆解任务，选择工具，判断风险，管理普通记忆、知识库和 skill |
+| `open_gui` 工具 | 桥接层 | 设备列表、App 列表、设备绑定、打开 App、点击、执行手机任务、查询 / 暂停 / 恢复 / 取消 OpenGUI execution |
+| OpenGUI Backend | 手机执行子 Agent | 维护任务与 execution 状态，运行 Plan Supervisor / Executor Graph，调用 VLM 与动作执行链路，返回执行结果 |
+| Android Client | 设备运行层 | 保持 standby 连接，上传截图和结构化状态，通过无障碍服务执行点击、输入、滑动、返回、Home 等动作 |
+
+ZLAgent 不直接接管手机屏幕，OpenGUI 也不接管 ZLAgent 的长期记忆和主对话。ZLAgent 负责“该不该做、怎么描述目标、何时停、何时问用户”，OpenGUI 负责“在手机上真实执行并把证据返回”。
+
+### 主流程
+
+```text
+用户在微信 / Webhook 中明确说“请你用手机 ...”
+        |
+        v
+ZLAgent 才允许激活手机 GUI 工具
+        |
+        v
+加载必要上下文、普通记忆、权限规则和当前设备绑定
+        |
+        v
+调用 open_gui 工具
+        |
+        v
+OpenGUI Backend 创建 task / execution
+        |
+        v
+Android Client 观察屏幕并执行动作
+        |
+        v
+execution 状态、结果、失败原因回到 ZLAgent
+        |
+        v
+ZLAgent 回复用户，并按规则沉淀可复用经验
+```
+
+当前已落地的 ZLAgent 侧能力包括：
+
+- `ZLAGENT_OPENGUI_ENABLED=true` 时自动注册 `open_gui` 工具。
+- `ZLAGENT_OPENGUI_BASE_URL` 默认指向 OpenGUI backend，Docker 中使用 `http://host.docker.internal:7777`。
+- `gui_device_bindings` 按 `platform + user_id` 记录默认手机，微信、Webhook 或后续渠道可以绑定不同设备。
+- `tool_search` 只有在当前用户原文包含 `请你用手机` 时才会返回 `open_gui`，避免 `网易云`、`播放`、`打开 App` 这类普通关键词直接触发手机执行。
+- `open_gui` 支持 `devices`、`apps`、`bind`、`current_binding`、`open_app`、`tap/click`、`do`、`status`、`pause`、`resume`、`cancel`。
+- 根目录 `./start.sh` 会同时启动 OpenGUI backend 和 ZLAgent；`./start.sh --with-phone` 会继续构建、安装并启动 Android Client。
+- `./status.sh` 和 `./phone-wifi.sh` 用于查看服务、设备在线状态和无线调试连接。
+
+### 手机任务执行策略
+
+手机任务会先被整理成明确的执行契约，而不是直接把一句话丢给视觉模型。ZLAgent 会尽量提供：
+
+- 任务目标：要打开什么 App、到达什么页面、完成什么观察或操作。
+- 停止条件：做到哪一步算完成，什么情况下应该暂停。
+- 安全边界：哪些动作可以继续，哪些动作必须问用户。
+- 验证标准：需要看到什么页面证据、状态变化或 execution 结果。
+
+执行路线按稳定性排序：
+
+```text
+确定性系统能力
+-> 结构化 UI / 元素候选
+-> OpenGUI 屏幕观察与动作执行
+-> VLM 兜底理解
+```
+
+当前已经落地的稳定能力包括：
+
+- App 列表：从在线 Android 设备读取可启动应用列表。
+- Package 启动：根据包名或 App 名打开目标应用，例如 `com.netease.cloudmusic`。
+- 屏幕截图：由 Android client 截取当前屏幕并上传给 OpenGUI executor。
+- 无障碍动作：点击、长按、滑动、拖动、输入、返回、主页、等待、完成、请求用户接管。
+- Execution 管理：查询、暂停、恢复、取消 OpenGUI 执行。
+
+MediaSession 播放控制、AppFunctions、Notification RemoteInput、Deep Link 搜索页直达等属于后续可扩展的确定性 Android 接口，当前版本尚未作为 ZLAgent/OpenGUI 的独立工具接入。现在遇到“搜索歌曲并播放”“在 App 内找到某个页面”这类业务动作时，通常仍需要 OpenGUI 的截图、无障碍动作和 VLM 能力处理。这样做的核心目标是：能确定就不猜，必须看屏幕时再看屏幕。
+
+### 双层记忆设计
+
+ZLAgent 和 OpenGUI 的记忆职责保持分离：
+
+| 记忆池 | 关注内容 | 典型用途 |
+|---|---|---|
+| ZLAgent 普通记忆 | 用户偏好、项目背景、长期规则、通用任务经验 | 旅行偏好、常用工具、项目上下文、日常对话规则 |
+| OpenGUI 手机记忆 | 设备状态、执行失败、页面阻塞、验证标准、App 操作经验 | 某 App 登录阻塞、广告弹窗处理、页面证据不足、任务超时经验 |
+
+普通对话不会默认注入 OpenGUI 的手机操作经验，避免“手机执行日志”污染日常聊天。只有当任务被识别为手机 GUI 操作时，ZLAgent 才把相关设备绑定、执行状态和可复用经验作为指导信息交给 OpenGUI。
+
+OpenGUI 执行结束后，设备离线、任务超时、误判成功、页面证据不足、登录 / 权限 / 广告 / 网络阻塞等信息会回到 ZLAgent。后续遇到类似任务时，这些经验可以重新进入手机任务上下文，形成：
+
+```text
+执行结果
+-> 失败 / 成功经验沉淀
+-> 下次任务前注入相关经验
+-> 修正 OpenGUI 子 Agent 行为
+```
+
+### 安全边界
+
+低风险手机操作可以自动执行，例如：
+
+- 查看在线设备、查看已安装 App、查看当前绑定。
+- 打开 App、观察当前屏幕、读取页面状态。
+- 普通页面导航、返回桌面、低风险点击。
+- 查询 execution 状态。
+
+高风险动作必须确认，包括：
+
+- 支付 / 转账 / 红包 / 下单 / 购买。
+- 发送消息、发布内容、提交表单。
+- 删除内容、清空数据、导出敏感信息。
+- 授权 / 登录 / 绑定账号。
+- 输入密码、验证码、银行卡或身份信息。
+- 修改安全设置。
+
+`open_gui` 工具本身仍属于 confirm 级能力；只读和低风险动作会被工具注册表放行，高风险关键词、绑定设备、取消任务等动作会进入 ZLAgent 的确认流。用户在 IM 里确认后，系统才继续执行。
+
+### Skill 沉淀
+
+手机任务中的可复用经验不会直接变成正式 skill。更稳妥的路径是：
+
+```text
+一次执行
+-> OpenGUI / ZLAgent 记录可复用经验
+-> 多次验证后形成 draft skill
+-> 人工或审查流程确认
+-> 正式进入 skill 管理体系
+```
+
+例如“某音乐 App 搜索并播放歌曲”“某资讯 App 搜索主题并总结前三条结果”“某购物 App 只浏览不下单”等流程，都可以先在 OpenGUI 手机记忆中积累经验，再沉淀成面向后续手机任务的 skill。
+
+### 启动方式
+
+推荐使用根目录脚本同时启动两套服务：
+
+```bash
+./start.sh
+```
+
+这会启动：
+
+```text
+ZLAgent API      http://localhost:8020
+OpenGUI Backend  http://localhost:7777
+```
+
+如果已经连接 Android 手机并开启 USB 调试，可以继续安装和启动手机端：
+
+```bash
+./start.sh --with-phone
+```
+
+常用检查命令：
+
+```bash
+./status.sh
+curl http://localhost:7777/api/remote-control/devices
+```
+
+无线调试辅助：
+
+```bash
+./phone-wifi.sh ip
+./phone-wifi.sh pair <pair_ip:pair_port>
+./phone-wifi.sh connect <device_ip:adb_port>
+./phone-wifi.sh devices
+```
+
+### 代码位置
+
+| 能力 | 代码位置 |
+|---|---|
+| ZLAgent 注册 OpenGUI 工具 | `backend/bootstrap/runtime.py` |
+| OpenGUI 工具定义与安全判断 | `backend/tools/builtins/open_gui.py` |
+| OpenGUI REST client | `backend/opengui/client.py` |
+| 手机设备绑定表 | `backend/db/models.py` / `backend/db/gui_devices.py` |
+| OpenGUI backend 启动编排 | `start.sh` / `scripts/opengui-supervisor.sh` |
+| 服务与设备状态检查 | `status.sh` / `phone-wifi.sh` |
+| OpenGUI 后端子 Agent | `OpenGUI-main/server/apps/backend/src/modules/graph-agent/` |
+| Android 动作执行 | `OpenGUI-main/client/core_accessibility/` |
+| 工具测试覆盖 | `tests/test_open_gui_tool.py` |
 
 ---
 
@@ -272,6 +471,7 @@ ZLAgent 适合以下场景：
 
 - 个人 IM 日常助理
 - 论文 / 旅行 / 天气 / 记忆 / 定时任务等高频对话任务
+- 通过 OpenGUI 操作真实 Android 手机 App 的个人自动化任务
 - 需要长期记忆、技能管理、MCP 工具扩展的助理系统
 - 需要在微信 / Webhook 里直接完成自然语言交互的场景
 
@@ -301,16 +501,22 @@ flowchart TD
     I --> J1[内置工具]
     I --> J2[MCP 外部工具]
     I --> J3[是否命中答案缓存]
+    I --> J4[open_gui 手机工具]
 
     J3 -->|命中| K[直接复用缓存答案]
     J3 -->|未命中| L[继续让模型处理]
 
     J1 --> M[权限判断]
     J2 --> M
-    M -->|安全| N[执行]
+    J4 --> M
+    M -->|普通安全动作| N[执行普通工具]
+    M -->|手机任务| OG[OpenGUI Backend]
     M -->|需要确认| O[等待用户确认]
-    O -->|用户在 IM 里同意| N
+    O -->|同意执行普通工具| N
+    O -->|同意执行手机任务| OG
     N --> P[工具结果]
+    OG --> AC[Android Client]
+    AC --> P
     P --> I
 
     I --> Q[回复到 IM]
@@ -455,10 +661,11 @@ ZLAgent 把旅行能力做成领域包，而不是只靠普通提示词：
 | 关系数据库 | PostgreSQL 16 + pgvector |
 | 缓存 / Session | Redis 7（LRU 256MB） |
 | 工具协议 | MCP（stdio + streamable-http） |
+| 手机执行 | OpenGUI Backend + Android Client + AccessibilityService |
 | 包管理 | npm / pip / uvx / git+ |
 | 长期记忆 | PostgreSQL `UserMemory` 表 + JSONL 会话归档 |
 | 知识库 | 文件型 markdown + 图谱视图 / 模型抽取缓存 |
-| 运行环境 | Python 3.11+ / Docker / macOS / Linux / Windows PowerShell |
+| 运行环境 | Python 3.11+ / Node.js / Docker / Android / macOS / Linux / Windows PowerShell |
 
 ---
 
@@ -495,10 +702,31 @@ ZLAGENT_ROUTER_LLM_MODEL=deepseek-v4-flash
 WEIXIN_BASE_URL=http://...
 ```
 
-### 3. Docker 一键启动（推荐）
+### 3. 本地启动顺序（推荐）
 
 ```bash
+cd <OpenZLAgent>
 docker compose up -d --build
+```
+
+会启动：
+
+```text
+ZLAgent API      http://localhost:8020
+postgres+pgvector
+redis
+```
+
+开一个单独窗口看应用主日志：
+
+```bash
+docker compose logs -f --tail=100 zlagent
+```
+
+连接微信：
+
+```bash
+docker compose run --rm weixin-login
 ```
 
 如果本机已经有 Postgres 占用了 `5432`，把 ZLAgent 的宿主机映射改到 `15432`，容器内部仍然走 `postgres:5432`：
@@ -507,7 +735,7 @@ docker compose up -d --build
 docker compose -f docker-compose.yml -f <(printf 'services:\n  postgres:\n    ports: !override\n      - "15432:5432"\n') up -d --build
 ```
 
-会拉起三个服务：
+`docker compose` 会拉起三个服务：
 
 ```text
 zlagent           http://localhost:8020
@@ -515,7 +743,36 @@ postgres+pgvector localhost:5432  或  localhost:15432
 redis             localhost:6379
 ```
 
-### 4. 验证
+### 4. 启动 OpenGUI 手机执行链路
+
+如果要让 ZLAgent 操作真实 Android 手机，需要同时启动 OpenGUI backend 和 Android Client。根目录脚本会把 OpenGUI backend 跑在 `http://localhost:7777`，并让 ZLAgent 容器通过 `http://host.docker.internal:7777` 调用它：
+
+```bash
+cd <OpenZLAgent>
+./start.sh
+```
+
+第一次连接 USB 调试手机并安装 / 启动手机端：
+
+```bash
+./start.sh --with-phone
+```
+
+如果用 Android 11+ 无线调试，先在手机的“开发者选项 -> 无线调试”里取得配对端口和连接端口，然后运行：
+
+```bash
+./phone-wifi.sh pair <pair_ip:pair_port>
+./phone-wifi.sh connect <device_ip:adb_port>
+```
+
+检查 OpenGUI 设备是否在线：
+
+```bash
+./phone-wifi.sh devices
+curl http://localhost:7777/api/remote-control/devices
+```
+
+### 5. 验证
 
 ```bash
 docker compose ps
@@ -944,7 +1201,13 @@ ZLAGENT_SEARXNG_URL=
 
 ## License
 
-本项目代码以 **MIT License** 发布。
+本仓库不是单一许可证覆盖所有目录：
+
+- ZLAgent 根项目自研代码以 **MIT License** 发布，见 [LICENSE](./LICENSE)。
+- `OpenGUI-main/` 保留 OpenGUI 原始许可，使用 **Business Source License 1.1 (BUSL-1.1)**，见 [OpenGUI-main/LICENSE](./OpenGUI-main/LICENSE)。
+- OpenGUI 的 BUSL 参数为：Licensor `Core-Mate`，Change Date `2030-04-29`，Change License `Apache License, Version 2.0`。
+- 在 Change Date 前，OpenGUI 允许复制、修改、再分发和非生产使用；生产使用、商业使用、托管服务或集成进商业产品，需要 Core-Mate 的单独商业授权。
+- ZLAgent 的 MIT License 不会重新授权 `OpenGUI-main/`，也不会解除 OpenGUI BUSL-1.1 的限制。
 
 项目设计参考了以下开源项目，公开发布时请遵守各自的许可与署名要求：
 
@@ -953,11 +1216,87 @@ ZLAGENT_SEARXNG_URL=
 - **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**（MIT，© 2025 Nous Research）
   - **代码 vendored**：`backend/gateways/_vendor/weixin_ilink.py` 是 Hermes `gateway/platforms/weixin.py` 的 iLink Bot 协议精简移植（MIT 协议文头已内嵌）
   - **设计参考、Python 重新实现**：参考长期记忆、工具安全、历史压缩、技能管理、定时任务和部分技能设计；相关实现主要在 `backend/memory/`、`backend/agent/`、`backend/tools/`、`workspace/skills/`
-- **[OpenClaw](https://github.com/steipete/openclaw)**（MIT，© 2025 Peter Steinberger）
+- **[OpenClaw](https://github.com/openclaw/openclaw)**（MIT，© 2026 OpenClaw Foundation）
+  - **代码参考 / 部分常量移植**：`backend/mcp/lifecycle.py` 中的 MCP 子进程环境变量拦截清单来自 OpenClaw `host-env-security-policy.json`
   - **设计参考、Python 重新实现**：参考工具安全分级、危险操作确认和 MCP 安装安全策略，位于 `backend/tools/` 与 `backend/mcp/`
-- **[nvk/llm-wiki](https://github.com/nvk/llm-wiki)**（公开设计笔记，无源码 vendor）
+- **[nvk/llm-wiki](https://github.com/nvk/llm-wiki)**（MIT，© 2026 nvk）
   - **设计参考、Python 重新实现**：参考“能复用就不要重复生成”的 wiki 缓存思路，并实现事实抽取、来源记录、置信度和概念页整理，主要在 `backend/wiki/` 与 `backend/skills/`
-- **[andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills)**（MIT，Forrest Chang 整理自 [Andrej Karpathy 推文](https://x.com/karpathy/status/2015883857489522876)）
+- **[andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills)**（上游 README / plugin metadata 标注 MIT，Forrest Chang 整理自 [Andrej Karpathy 推文](https://x.com/karpathy/status/2015883857489522876)）
   - **提示词参考**：四条原则（Think Before Coding / Simplicity First / Surgical Changes / Goal-Driven Execution）译写为中文常量，用在系统提示词和技能复盘提示词里
 
-公开发布前建议补齐独立的 `THIRD_PARTY_NOTICES.md`，把每个上游 MIT 全文和 vendored 文件来源集中登记；当前 README 先保留来源和改编范围说明。
+第三方来源、vendored 文件和许可证要求集中登记在 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。公开发布时不要删除上游版权声明、许可证文本或 `OpenGUI-main/LICENSE`。
+
+---
+
+## 引用 / 集成组件清单
+
+本节把当前仓库实际引用、集成或预留配置的 OpenGUI、Android、MCP 和外部工具集中列出，便于公开发布前检查协议边界。
+
+### OpenGUI 与手机执行链路
+
+| 组件 | 是否随仓库包含 | 位置 | 用途 | 协议 / 边界 |
+|---|---|---|---|---|
+| OpenGUI | 是 | `OpenGUI-main/` | Android GUI agent 子系统，负责真实手机屏幕观察、任务执行和 execution 状态管理 | BUSL-1.1，见 `OpenGUI-main/LICENSE` |
+| OpenGUI Backend | 是 | `OpenGUI-main/server/` | NestJS / LangGraph 后端，提供 `/api/remote-control/*`、standby socket、execution socket、Plan Supervisor / Executor Graph | 继承 OpenGUI BUSL-1.1 |
+| OpenGUI Android Client | 是 | `OpenGUI-main/client/` | Android 设备端，负责截图、结构化状态、无障碍动作执行、悬浮窗和 standby 连接 | 继承 OpenGUI BUSL-1.1 |
+| ZLAgent `open_gui` 工具 | 是 | `backend/tools/builtins/open_gui.py` | ZLAgent 到 OpenGUI 的桥接工具，支持设备列表、绑定、打开 App、点击、执行任务、查询 / 暂停 / 恢复 / 取消 execution | ZLAgent MIT；调用 OpenGUI 时仍受 OpenGUI BUSL 限制 |
+| OpenGUI REST Client | 是 | `backend/opengui/client.py` | 调用 OpenGUI backend 的 async HTTP client | ZLAgent MIT |
+| 设备绑定表 | 是 | `backend/db/models.py` / `backend/db/gui_devices.py` | 按 `platform + user_id` 保存默认 Android 设备 | ZLAgent MIT |
+| 启动 / 连接脚本 | 是 | `start.sh` / `status.sh` / `phone-wifi.sh` / `scripts/opengui-supervisor.sh` | 启动 OpenGUI backend、检查状态、ADB reverse、无线调试配对和连接 | ZLAgent MIT；依赖 Android platform-tools / adb |
+
+### Android 侧主要依赖
+
+OpenGUI Android Client 使用 Android SDK、Gradle、Kotlin 和常见 Android 库。它们不是由 ZLAgent 重新授权，仍遵循各自上游许可证。
+
+| 类型 | 组件 / 依赖 | 来源位置 | 用途 |
+|---|---|---|---|
+| Android 构建 | Android Gradle Plugin、Gradle、Kotlin、KSP | `OpenGUI-main/client/gradle/libs.versions.toml` | Android 多模块构建、Kotlin 编译、符号处理 |
+| AndroidX / UI | AndroidX Core、Activity、Fragment、Lifecycle、AppCompat、RecyclerView、ViewPager2、ConstraintLayout、Compose BOM、Material / Material3 | `OpenGUI-main/client/gradle/libs.versions.toml` | Android App 基础 UI、生命周期和 Compose / View 组件 |
+| 网络通信 | OkHttp、OkHttp SSE、Retrofit、Gson、socket.io-client | `OpenGUI-main/client/gradle/libs.versions.toml` | HTTP、SSE、WebSocket / Socket.IO、JSON 序列化 |
+| 本地存储 | Tencent MMKV | `OpenGUI-main/client/gradle/libs.versions.toml` | Android 本地配置和状态存储 |
+| 测试 | JUnit、AndroidX Test、Espresso | `OpenGUI-main/client/gradle/libs.versions.toml` | Android 单测 / 仪器测试 |
+| 系统能力 | Android AccessibilityService、MediaProjection / screenshot、PackageManager / launch intent、ADB、Wireless debugging、`adb reverse tcp:7777` | Android 系统 / `phone-wifi.sh` / OpenGUI Android Client | 应用枚举、按包名启动应用、截图、无障碍动作、调试连接、本机 backend 端口转发 |
+
+### MCP 与外部工具链
+
+ZLAgent 支持 MCP（Model Context Protocol）作为外部工具接入方式。MCP server 通过 `config/mcp_servers.yaml` 配置，运行时由 `npx` / `uvx` 下载或启动，相关 server 和包遵守各自上游许可证。
+
+| 组件 | 是否默认启用 | 配置位置 | 用途 | 备注 |
+|---|---|---|---|---|
+| Python MCP SDK `mcp` | 是，作为依赖 | `requirements.txt` | ZLAgent MCP client，负责 stdio / HTTP MCP 会话 | Python 包遵守其上游许可证 |
+| `open-websearch` MCP | 是，当前配置启用 | `config/mcp_servers.yaml` | 多搜索引擎检索与网页内容抓取 | 通过 `npx open-websearch@latest` 启动 |
+| `@modelcontextprotocol/server-filesystem` | 否，示例配置 | `config/mcp_servers.yaml` | 文件系统 MCP 工具 | 示例保留，启用后需遵守上游许可证 |
+| `@playwright/mcp` | 否，示例配置 | `config/mcp_servers.yaml` | 浏览器自动化 MCP 工具 | 示例保留，默认不启用 |
+| `@modelcontextprotocol/server-github` | 否，示例配置 | `config/mcp_servers.yaml` | GitHub issue / PR / commit 工具 | 需要 `GITHUB_TOKEN` |
+| `mcp-server-youtube-transcript` / `yt-dlp` | 否，示例配置；`yt-dlp` 在 Python 依赖中预留 | `config/mcp_servers.yaml` / `requirements.txt` | YouTube 字幕 / transcript 抽取 | 启用后遵守对应包许可证 |
+| `@larksuiteoapi/lark-mcp` | 否，示例配置 | `config/mcp_servers.yaml` | 飞书 / Lark 工具 | 需要 Feishu app credentials |
+| `mcp-server-markitdown` | 否，示例配置 | `config/mcp_servers.yaml` | PDF / Office 文档转 Markdown | 通过 `uvx` 启动 |
+| `@modelcontextprotocol/server-sequential-thinking` | 否，示例配置 | `config/mcp_servers.yaml` | 结构化思考辅助 | 只读工具可提升为 safe |
+| `mcp-server-fetch` | 否，示例配置 | `config/mcp_servers.yaml` | URL 到 Markdown 抽取 | 通过 `uvx` 启动 |
+| `@modelcontextprotocol/server-memory` | 否，示例配置 | `config/mcp_servers.yaml` | MCP portable knowledge graph memory | 与 ZLAgent 自身 memory 分离 |
+| `mcp-server-time` | 否，示例配置 | `config/mcp_servers.yaml` | 当前时间和时区转换 | 通过 `uvx` 启动 |
+
+### OpenGUI server 侧主要 Node 依赖
+
+| 组件 | 来源位置 | 用途 |
+|---|---|---|
+| Node.js 22+ / pnpm | `OpenGUI-main/server/package.json` | OpenGUI backend 构建和运行 |
+| TypeScript / Turbo / Biome | `OpenGUI-main/server/package.json` | 类型检查、monorepo 构建、格式和 lint |
+| `@larksuiteoapi/node-sdk` | `OpenGUI-main/server/package.json` | OpenGUI IM channel / Feishu 能力 |
+| `grammy` | `OpenGUI-main/server/package.json` | Telegram bot 能力 |
+| `streamdown` | `OpenGUI-main/server/package.json` | Markdown / stream rendering 辅助 |
+
+### ZLAgent Python 侧主要依赖
+
+| 组件 | 来源位置 | 用途 |
+|---|---|---|
+| FastAPI / Uvicorn | `requirements.txt` | ZLAgent HTTP API |
+| SQLAlchemy / Pydantic / pydantic-settings | `requirements.txt` | ORM、schema、配置管理 |
+| PostgreSQL + pgvector | `docker-compose.yml` | 主数据和向量扩展 |
+| Redis / fakeredis | `requirements.txt` / `docker-compose.yml` | 会话、缓存和测试替身 |
+| httpx / aiohttp / cryptography / qrcode | `requirements.txt` | HTTP client、微信 iLink、二维码登录 |
+| croniter | `requirements.txt` | 定时任务调度 |
+| PyYAML | `requirements.txt` | MCP 和配置文件解析 |
+| yt-dlp | `requirements.txt` | YouTube transcript MCP 相关预留依赖 |
+
+如果后续新增 Android SDK、MCP server、OpenGUI 子模块、外部源码或直接复制的策略表，请同步更新本节和 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。

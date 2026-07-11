@@ -171,6 +171,42 @@ describe("RemoteControlService", () => {
 			taskId: 12,
 			taskName: "OpenGUI research",
 			device: phoneB,
+			dispatched: true,
+		});
+	});
+
+	it("can skip standby dispatch for local in-app voice execution", async () => {
+		standbySocketService.getOnlineDevices.mockReturnValue([phoneA]);
+		standbySocketService.getOnlineDeviceById.mockReturnValue(phoneA);
+		taskService.createTask.mockResolvedValue({
+			id: 13,
+			taskName: "Voice task",
+		});
+		taskExecutionService.executeTask.mockResolvedValue({
+			success: true,
+			executionId: 35,
+			taskId: 13,
+			message: "Execution created, waiting for WS ready signal",
+		});
+
+		const result = await service.doTask({
+			description: "open messages",
+			taskName: "Voice task",
+			deviceId: "phone-a",
+			dispatch: false,
+		});
+
+		expect(taskExecutionService.executeTask).toHaveBeenCalledWith(13, 1, {
+			deviceId: "phone-a",
+		});
+		expect(standbyGateway.dispatchToDevice).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			success: true,
+			executionId: 35,
+			taskId: 13,
+			taskName: "Voice task",
+			device: phoneA,
+			dispatched: false,
 		});
 	});
 
@@ -199,5 +235,6 @@ describe("RemoteControlService", () => {
 			taskName: "Existing task",
 		});
 		expect(result.device).toEqual(phoneA);
+		expect(result.dispatched).toBe(true);
 	});
 });

@@ -24,6 +24,7 @@ export interface RemoteControlExecutionResponse {
 	taskId: number;
 	taskName: string;
 	device: RemoteControlDevice;
+	dispatched: boolean;
 	message?: string;
 }
 
@@ -85,6 +86,7 @@ export class RemoteControlService {
 			userId,
 			device,
 			socket,
+			dispatch: dto.dispatch !== false,
 		});
 	}
 
@@ -101,6 +103,7 @@ export class RemoteControlService {
 			userId,
 			device,
 			socket,
+			dispatch: dto.dispatch !== false,
 		});
 	}
 
@@ -134,6 +137,7 @@ export class RemoteControlService {
 		userId: number;
 		device: RemoteControlDevice;
 		socket: StandbySocket;
+		dispatch: boolean;
 	}): Promise<RemoteControlExecutionResponse> {
 		const result = await this.taskExecutionService.executeTask(
 			input.taskId,
@@ -141,11 +145,13 @@ export class RemoteControlService {
 			{ deviceId: input.device.deviceId },
 		);
 
-		this.standbyGateway.dispatchToDevice(input.socket, {
-			executionId: result.executionId,
-			taskId: input.taskId,
-			taskName: input.taskName,
-		});
+		if (input.dispatch) {
+			this.standbyGateway.dispatchToDevice(input.socket, {
+				executionId: result.executionId,
+				taskId: input.taskId,
+				taskName: input.taskName,
+			});
+		}
 
 		return {
 			success: result.success,
@@ -153,6 +159,7 @@ export class RemoteControlService {
 			taskId: input.taskId,
 			taskName: input.taskName,
 			device: input.device,
+			dispatched: input.dispatch,
 			message: result.message,
 		};
 	}

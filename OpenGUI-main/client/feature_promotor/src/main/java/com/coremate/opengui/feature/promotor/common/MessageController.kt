@@ -273,17 +273,20 @@ object MessageController {
                                     callGuiAgentTag = true
                                     val pressHomeAction = PressHomeAction()
                                     pressHomeAction.perform()
-                                    AIFloatWindowManager.getExecuteTaskWindow()
-                                        ?.updateContent("Task running", "call_gui_agent")
-                                    AIFloatWindowManager.getExecuteTaskWindow()
-                                        ?.reset("call_gui_agent")
-                                    AIFloatWindowManager.getExecuteTaskWindow()
-                                        ?.show("call_gui_agent")
-                                    AIFloatWindowManager.getExecuteTaskWindow()
-                                        ?.startShrinkTimeDown("call_gui_agent")
-                                    AIFloatWindowManager.getGradientWindow()
-                                        ?.show("call_gui_agent")
-
+                                    if (AIFloatWindowManager.compactOnlyMode) {
+                                        AIFloatWindowManager.showStandbyIsland("Task running", "call_gui_agent")
+                                    } else {
+                                        AIFloatWindowManager.getExecuteTaskWindow()
+                                            ?.updateContent("Task running", "call_gui_agent")
+                                        AIFloatWindowManager.getExecuteTaskWindow()
+                                            ?.reset("call_gui_agent")
+                                        AIFloatWindowManager.getExecuteTaskWindow()
+                                            ?.show("call_gui_agent")
+                                        AIFloatWindowManager.getExecuteTaskWindow()
+                                            ?.startShrinkTimeDown("call_gui_agent")
+                                        AIFloatWindowManager.getGradientWindow()
+                                            ?.show("call_gui_agent")
+                                    }
                                 }
                             }
                         }
@@ -368,7 +371,7 @@ object MessageController {
                     )
                     TaskCenter.executionId = null
                     TaskCenter.currentTaskState = TaskCenter.TaskState.NONE
-                    AIFloatWindowManager.dismissAllWindow()
+                    resetFloatingWindowsAfterExecution("execution finished")
                     val msg = Message.obtain()
                     msg.what = SSE_TYPE_FINISH
                     handler.sendMessage(msg)
@@ -597,7 +600,7 @@ object MessageController {
                     "URL_REQ" to "MessageController | stopAutomationTask | cancel started (async)，from = $from, code = ${it?.code()}  body = ${it?.body()}"
                 )
                 StatisticsManager.instance.onUploadEvent(StatisticEvent.URL_REQUEST, eventParams)
-                AIFloatWindowManager.dismissAllWindow()
+                resetFloatingWindowsAfterExecution("stopAutomationTask success")
                 _executionConnectState.value = false
                 val msg = Message.obtain()
                 msg.what = UPDATE_MSG_FINAL_STATE
@@ -616,7 +619,7 @@ object MessageController {
                 StatisticsManager.instance.onUploadException(
                     StatisticCustomError.API_ERR, it.message ?: "cancel task API error"
                 )
-                AIFloatWindowManager.dismissAllWindow()
+                resetFloatingWindowsAfterExecution("stopAutomationTask failure")
                 _executionConnectState.value = false
                 val msg = Message.obtain()
                 msg.what = UPDATE_MSG_FINAL_STATE
@@ -815,7 +818,7 @@ object MessageController {
                 }
 
                 SSE_TYPE_FINISH -> {
-                    AIFloatWindowManager.dismissAllWindow()
+                    resetFloatingWindowsAfterExecution("SSE_TYPE_FINISH")
                     updateLastMessageFinalState(FinalStateEnum.TASK_SUCCESS)
                     // Execution socket cleanup is handled by stopAutomationTask / cancelNetConnection
                 }
@@ -828,6 +831,13 @@ object MessageController {
     }
 
     private var summaryCallback: SummaryCallback? = null
+
+    private fun resetFloatingWindowsAfterExecution(from: String) {
+        AIFloatWindowManager.dismissAllWindow()
+        if (AIFloatWindowManager.compactOnlyMode) {
+            AIFloatWindowManager.showStandbyIsland("Listening on standby", from)
+        }
+    }
 
     fun setSummaryCallback(callback: SummaryCallback) {
         this.summaryCallback = callback

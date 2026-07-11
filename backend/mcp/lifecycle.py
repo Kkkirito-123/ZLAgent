@@ -79,9 +79,9 @@ _VALID_PERMISSIONS = ("safe", "confirm")
 #     CMAKE_C_COMPILER, CMAKE_CXX_COMPILER
 #
 # Copied verbatim from OpenClaw's `host-env-security-policy.json`
-# (`blockedEverywhereKeys` + `blockedPrefixes`) which has been vetted in
-# production. It's intentionally over-inclusive: false positives here
-# are a configuration complaint, false negatives are a security breach.
+# (`blockedEverywhereKeys` + `blockedPrefixes`) under the MIT License; see
+# THIRD_PARTY_NOTICES.md. It's intentionally over-inclusive: false positives
+# here are a configuration complaint, false negatives are a security breach.
 _BLOCKED_ENV_KEYS: frozenset[str] = frozenset({
     "NODE_OPTIONS", "NODE_PATH",
     "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONBREAKPOINT",

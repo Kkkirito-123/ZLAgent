@@ -99,19 +99,8 @@ class ExecuteTaskWindow(context: Context) : FrameLayout(context) {
             )
         }
         binding.cardStop.setOnClickListener {
-            // Stop task: cancel auto-hide and show confirm/cancel buttons.
             HapticFeedbackHelper.lightTap(context)
-            handler.removeCallbacks(shrinkRunnable)
-            binding.cardPauseResume.visibility = GONE
-            binding.cardStop.visibility = GONE
-            binding.confirmCancelContainer.visibility = VISIBLE
-            MessageController.pauseTask()
-            binding.tvContent.text = "Stop the current task?"
-            AIFloatWindowManager.getSlideExpandWindow()?.updateBackground(true)
-            LogManager.saveLog(
-                context, TAG, "$TAG | user action | tapped stop",
-                TaskCenter.executionId ?: -1
-            )
+            enterStopConfirmation("stop button tapped")
         }
         binding.cardConfirm.setOnClickListener {
             // Confirm: stop the task.
@@ -300,6 +289,34 @@ class ExecuteTaskWindow(context: Context) : FrameLayout(context) {
         )
         handler.removeCallbacks(shrinkRunnable)
         handler.postDelayed(shrinkRunnable, 3000)
+    }
+
+    fun showStopConfirmation(from: String) {
+        if (!isShowing) {
+            show("stop confirmation requested - $from")
+        }
+        enterStopConfirmation(from)
+    }
+
+    private fun enterStopConfirmation(from: String) {
+        // Stop task: cancel auto-hide and show confirm/cancel buttons.
+        handler.removeCallbacks(shrinkRunnable)
+        binding.controlContainer.visibility = VISIBLE
+        binding.supplementContainer.visibility = GONE
+        binding.cardPauseResume.visibility = GONE
+        binding.cardStop.visibility = GONE
+        binding.confirmCancelContainer.visibility = VISIBLE
+        setWindowFocusable(false)
+        MessageController.pauseTask()
+        binding.tvStatus.text = "Paused"
+        binding.tvContent.text = "Stop the current task?"
+        AIFloatWindowManager.getSlideExpandWindow()?.updateBackground(true)
+        LogManager.saveLog(
+            context,
+            TAG,
+            "$TAG | user action | stop confirmation shown | from = $from",
+            TaskCenter.executionId ?: -1
+        )
     }
 
     private var shrinkRunnable = Runnable {

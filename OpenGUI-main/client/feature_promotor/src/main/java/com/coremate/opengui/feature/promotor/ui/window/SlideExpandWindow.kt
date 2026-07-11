@@ -10,13 +10,16 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.content.Intent
 import com.coremate.opengui.common.log.LogManager
 import com.coremate.opengui.feature.promotor.R
 import com.coremate.opengui.feature.promotor.common.MessageController
 import com.coremate.opengui.common.utils.HapticFeedbackHelper
 import com.coremate.opengui.common.TaskCenter
 import com.coremate.opengui.feature.promotor.databinding.WindowSlideExpandBinding
+import com.coremate.opengui.feature.promotor.ui.VoiceCommandActivity
 import com.coremate.opengui.feature.promotor.ui.AIFloatWindowManager
+import com.coremate.opengui.feature.promotor.ui.mine.setting.SettingActivity
 
 class SlideExpandWindow(context: Context) : FrameLayout(context) {
     private val binding: WindowSlideExpandBinding
@@ -35,19 +38,44 @@ class SlideExpandWindow(context: Context) : FrameLayout(context) {
         AIFloatWindowManager.registerSlideExpandWindow(this)
         binding.slideExpandRoot.setOnClickListener {
             HapticFeedbackHelper.lightTap(context)
-            dismiss("slide window tapped")
-            AIFloatWindowManager.getExecuteTaskWindow()?.reset("$TAG    init")
-            AIFloatWindowManager.showExecuteTaskWindow("slide window tapped")
+            if (TaskCenter.currentTaskState == TaskCenter.TaskState.EXECUTE && !AIFloatWindowManager.compactOnlyMode) {
+                dismiss("slide window tapped")
+                AIFloatWindowManager.getExecuteTaskWindow()?.reset("$TAG    init")
+                AIFloatWindowManager.showExecuteTaskWindow("slide window tapped")
+            } else if (TaskCenter.currentTaskState == TaskCenter.TaskState.EXECUTE) {
+                updateContent("Task running")
+            } else {
+                context.startActivity(
+                    Intent(context, VoiceCommandActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                )
+            }
             LogManager.saveLog(
                 context, "SlideExpandWindow", "cardResume click }",
                 TaskCenter.executionId ?: -1
             )
         }
+        binding.slideExpandRoot.setOnLongClickListener {
+            HapticFeedbackHelper.click(context)
+            if (TaskCenter.currentTaskState == TaskCenter.TaskState.EXECUTE && TaskCenter.executionId != null) {
+                dismiss("slide window long pressed")
+                AIFloatWindowManager.getExecuteTaskWindow()
+                    ?.showStopConfirmation("slide window long pressed")
+            } else {
+                context.startActivity(
+                    Intent(context, SettingActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                )
+            }
+            true
+        }
         binding.tvContent.isSelected = true
     }
 
     @Synchronized
-    fun show(from: String) {
+    fun show(from: String, allowIdle: Boolean = false) {
         try {
             LogManager.saveLog(
                 context,
@@ -55,7 +83,8 @@ class SlideExpandWindow(context: Context) : FrameLayout(context) {
                 "$TAG | slide window show | from = $from | isShowing = $isShowing | currentTaskState = ${TaskCenter.currentTaskState}",
                 TaskCenter.executionId ?: -1
             )
-            if (!isShowing && TaskCenter.currentTaskState == TaskCenter.TaskState.EXECUTE && (AIFloatWindowManager.getCallUserWindow()?.isShowing != true) && (AIFloatWindowManager.getAccessibilityServiceWarningWindow()?.isShowing != true)) {
+            val shouldShowForState = allowIdle || TaskCenter.currentTaskState == TaskCenter.TaskState.EXECUTE
+            if (!isShowing && shouldShowForState && (AIFloatWindowManager.getCallUserWindow()?.isShowing != true) && (AIFloatWindowManager.getAccessibilityServiceWarningWindow()?.isShowing != true)) {
                 windowManager.addView(this, layoutParamsForShow)
                 isShowing = true
             }

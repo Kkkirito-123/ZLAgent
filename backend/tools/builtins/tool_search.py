@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 from typing import Any, TYPE_CHECKING
 
+from ...agent.context import current_turn_context
 from ..base import Tool, ToolPermission, ToolResult
 
 if TYPE_CHECKING:
     from ..registry import ToolRegistry
+
+
+_OPENGUI_EXPLICIT_TRIGGER = "请你用手机"
+_PHONE_CONTROL_TOOLS = frozenset({"open_gui"})
 
 
 class ToolSearchTool(Tool):
@@ -15,6 +20,9 @@ class ToolSearchTool(Tool):
         "Search the deferred/specialized tool catalog by keyword and return exact"
         " tool names. Use this when you need a tool that is not currently visible"
         " in the tool schema, including MCP tools or rarely used high-cost tools."
+        " Phone-control tools such as open_gui are only discoverable when the"
+        " current original user message explicitly contains '请你用手机'; app"
+        " names or media verbs alone must not activate phone execution."
         " Do not use this for core assistant tools that are already visible"
         " (read_url, web_search, cron_manage). By default it returns deferred"
         " tools only; set include_loaded=true only for operator/debug inspection."
@@ -73,13 +81,18 @@ class ToolSearchTool(Tool):
             limit = 8
         limit = max(1, min(limit, 20))
         include_loaded = bool(arguments.get("include_loaded") or False)
+        allow_phone_tools = _current_turn_allows_phone_tools()
         matches = [
             m for m in self._registry.search(
                 query,
                 limit=limit,
                 include_description=False,
             )
-            if m["name"] != self.name and (include_loaded or m["deferred"])
+            if (
+                m["name"] != self.name
+                and (include_loaded or m["deferred"])
+                and (m["name"] not in _PHONE_CONTROL_TOOLS or allow_phone_tools)
+            )
         ]
         if not matches:
             return ToolResult(
@@ -106,3 +119,10 @@ class ToolSearchTool(Tool):
         lines.append("Exact deferred tool names activated for the next step:")
         lines.append(json.dumps(activate, ensure_ascii=False))
         return ToolResult(ok=True, content="\n".join(lines).strip(), raw={"activate_tools": activate})
+
+
+def _current_turn_allows_phone_tools() -> bool:
+    ctx = current_turn_context()
+    if ctx is None:
+        return False
+    return _OPENGUI_EXPLICIT_TRIGGER in (ctx.user_message or "")

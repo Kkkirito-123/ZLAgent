@@ -14,6 +14,29 @@ data class ExecuteTaskResp(
     val message: String
 )
 
+data class RemoteDoTaskReq(
+    val description: String,
+    val taskName: String?,
+    val deviceId: String?,
+    val dispatch: Boolean? = null
+)
+
+data class RemoteControlDevice(
+    val deviceId: String,
+    val deviceName: String? = null,
+    val appCount: Int? = null
+)
+
+data class RemoteDoTaskResp(
+    val success: Boolean,
+    val executionId: Int,
+    val taskId: Int,
+    val taskName: String,
+    val device: RemoteControlDevice? = null,
+    val dispatched: Boolean? = null,
+    val message: String? = null
+)
+
 data class PauseTaskResp(
     val success: Boolean,
     val statusCode: Int,

@@ -56,6 +56,6 @@ dependencies {
         exclude(group = "com.squareup.okhttp3")
     }
     implementation(libs.gson)
-    implementation("com.tencent:mmkv:2.2.4")
+    implementation(libs.mmkv)
     implementation("com.jakewharton.threetenabp:threetenabp:1.4.6")
 }

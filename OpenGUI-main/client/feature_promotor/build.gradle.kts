@@ -67,13 +67,6 @@ dependencies {
     ksp(project(":core_aop"))
     ksp("androidx.room:room-compiler:2.6.1")
 
-    implementation("com.bytedance.boringssl.so:boringssl-so:1.3.7-16kb")
-    implementation("org.chromium.net:cronet:4.2.210.4-tob") {
-        exclude(group = "com.bytedance.common", module = "wschannel")
-    }
-    implementation("com.bytedance.frameworks.baselib:ttnet:4.2.210.4-tob")
-    implementation("com.bytedance.speechengine:speechengine_tob:0.0.8.1-bugfix")
-
     //lottie
     api("com.airbnb.android:lottie:6.6.7")
 
@@ -83,7 +76,7 @@ dependencies {
 
     implementation("me.codeboy.android:align-text-view:2.3.2")
 
-    api("com.tencent:mmkv:2.2.4")
+    api(libs.mmkv)
 
     implementation("com.github.DylanCaiCoding.ViewBindingKTX:viewbinding-ktx:2.0.6")
     implementation("com.github.DylanCaiCoding.ViewBindingKTX:viewbinding-nonreflection-ktx:2.0.6")
@@ -91,7 +84,6 @@ dependencies {
     implementation("com.github.DylanCaiCoding.ViewBindingKTX:viewbinding-brvah:2.0.6")
     implementation("io.noties.markwon:core:4.6.2")
     implementation("com.google.android.material:material:1.12.0")
-
 // Markwon core library
     implementation("io.noties.markwon:core:4.6.2"){
         exclude(group = "org.jetbrains", module = "annotations")

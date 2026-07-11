@@ -95,14 +95,7 @@ dependencies {
     implementation(project(":core_common_jvm"))
     implementation(project(":automation"))
 
-
-    implementation("com.bytedance.boringssl.so:boringssl-so:1.3.7-16kb")
-    implementation("org.chromium.net:cronet:4.2.210.4-tob") {
-        exclude(group = "com.bytedance.common", module = "wschannel")
-    }
-    implementation("com.bytedance.frameworks.baselib:ttnet:4.2.210.4-tob")
-    implementation("com.bytedance.speechengine:speechengine_tob:0.0.8.1-bugfix")
-
+    implementation(libs.mmkv)
 
     implementation("androidx.lifecycle:lifecycle-process:2.8.4")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")

@@ -20,6 +20,9 @@ object AIFloatWindowManager {
     private var gradientWindow: GradientWindow? = null
     private var accessibilityServiceWarningWindow: AccessibilityServiceWarningWindow? = null
 
+    @Volatile
+    var compactOnlyMode: Boolean = false
+
     /**
      */
     var taskIsExecuted = false
@@ -89,7 +92,16 @@ object AIFloatWindowManager {
         slideExpandWindow?.show("AIFloatWindowManager - $from")
     }
 
+    fun showStandbyIsland(content: String = "Listening on standby", from: String) {
+        slideExpandWindow?.updateContent(content)
+        slideExpandWindow?.show("AIFloatWindowManager standby - $from", allowIdle = true)
+    }
+
     fun showExecuteTaskWindow(from: String) {
+        if (compactOnlyMode) {
+            showStandbyIsland("Task running", "compact execute redirect - $from")
+            return
+        }
 //        if (MessageController.getBackgroundStatus()) {
         acquireScreenWakeLock(executeTaskWindow?.context)
         executeTaskWindow?.show(from)

@@ -27,6 +27,8 @@ import com.coremate.opengui.network.api.task.DeleteTaskResp
 import com.coremate.opengui.network.api.task.ExecuteTaskReq
 import com.coremate.opengui.network.api.task.ExecuteTaskResp
 import com.coremate.opengui.network.api.task.PauseTaskResp
+import com.coremate.opengui.network.api.task.RemoteDoTaskReq
+import com.coremate.opengui.network.api.task.RemoteDoTaskResp
 import com.coremate.opengui.network.api.task.ResumeTaskReq
 import com.coremate.opengui.network.api.task.TaskExecutionsResult
 import com.coremate.opengui.network.api.task.TaskHistoryResp
@@ -165,6 +167,11 @@ interface ApiService {
         @Path("taskId") taskId: Int,
         @Body body: ExecuteTaskReq
     ): Response<ExecuteTaskResp>
+
+    @POST("/api/remote-control/tasks/do")
+    suspend fun doRemoteTask(
+        @Body body: RemoteDoTaskReq
+    ): Response<RemoteDoTaskResp>
 
     @PUT("/api/executions/{taskId}/pause")
     suspend fun newPauseTask(@Path("taskId") taskId: Int?): Response<PauseTaskResp>

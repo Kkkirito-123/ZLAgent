@@ -30,7 +30,7 @@ kotlinx-coroutines-rx2 = "1.8.0"
 monitor = "1.7.2"
 junitKtx = "1.2.1"
 cozeApi = "0.4.0"
-mmkv = "2.2.4"
+mmkv = "2.4.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }

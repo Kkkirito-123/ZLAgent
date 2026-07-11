@@ -4,7 +4,6 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ObjectAnimator
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,12 +11,12 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.coremate.opengui.R
-import com.coremate.opengui.feature.promotor.ui.home.HomeActivity
+import com.coremate.opengui.feature.promotor.runtime.HeadlessAgentRuntime
 import com.tencent.mmkv.MMKV
 
 /**
  * Source-available version: authentication is bypassed.
- * The app navigates directly to HomeActivity.
+ * The launcher starts the headless standby runtime and exits.
  * To connect to a real backend, set BETTER_AUTH_SECRET in server/.env and obtain
  * a token via the /api/user-auth/send-otp + /api/user-auth/verify-otp endpoints,
  * then store it in MMKV under the key "token".
@@ -52,8 +51,9 @@ class SplashActivity : AppCompatActivity() {
         }
 
         mmkv.encode("LastLoginTime", System.currentTimeMillis())
-        // Skip authentication in source-available version - go directly to HomeActivity
-        startActivity(Intent(this@SplashActivity, HomeActivity::class.java))
+        // Source-available headless mode: keep the standby service and dynamic-island entry alive.
+        HeadlessAgentRuntime.initialize(applicationContext)
+        HeadlessAgentRuntime.showStandbyIsland("launcher")
         finish()
     }
 

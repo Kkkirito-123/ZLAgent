@@ -17,14 +17,11 @@ import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.lifecycleScope
 import com.coremate.opengui.automation.AMServiceManager
 import com.coremate.opengui.accessibility.GestureService
-import com.coremate.opengui.accessibility.capture.ScreenCaptureManager
-import com.coremate.opengui.common.interfaces.ScreenshotProvider
 import com.coremate.opengui.common.log.LogManager
 import com.coremate.opengui.common.statistics.StatisticsManager
 import com.coremate.opengui.common.utils.AndroidLogger
 import com.coremate.opengui.common.utils.HapticFeedbackHelper
 import com.coremate.opengui.common.utils.TimeUtils
-import com.coremate.opengui.common.utils.TimeUtils.toBeijingUtcString
 import com.coremate.opengui.common_jvm.event.AutomationEvent
 import com.coremate.opengui.common_jvm.event.AutomationEventBus
 import com.coremate.opengui.common_jvm.utils.Logger
@@ -32,9 +29,8 @@ import com.coremate.opengui.feature.promotor.common.MessageController
 import com.coremate.opengui.common.TaskCenter
 import com.coremate.opengui.feature.promotor.common.markdown.MarkwonManager
 import com.coremate.opengui.common.push.PushManager
-import com.coremate.opengui.feature.promotor.sdk.SpeechEngineManager
+import com.coremate.opengui.feature.promotor.runtime.HeadlessAgentRuntime
 import com.coremate.opengui.feature.promotor.ui.AIFloatWindowManager
-import com.coremate.opengui.network.api.ServerConstant
 import com.tencent.mmkv.MMKV
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,7 +40,6 @@ import kotlinx.coroutines.launch
 
 class PromotorApplication : Application(), LifecycleOwner, ViewModelStoreOwner {
 
-    private val TAG = "PromotorApplication"
     private val runtimeLogger: Logger = AndroidLogger()
     private lateinit var lifecycleRegistry: LifecycleRegistry
     override val lifecycle: Lifecycle
@@ -56,8 +51,8 @@ class PromotorApplication : Application(), LifecycleOwner, ViewModelStoreOwner {
 
     override fun onCreate() {
         super.onCreate()
+        MMKV.initialize(this)
         PushManager.applicationContext = applicationContext
-        SpeechEngineManager.initialize(this, this)
 
         StatisticsManager.instance.preInitSDK(this)
         // Initialize LifecycleRegistry
@@ -86,13 +81,9 @@ class PromotorApplication : Application(), LifecycleOwner, ViewModelStoreOwner {
 
         AMServiceManager.instance.init(this)
         MessageController.init(this)
-        val screenshotProviderInstance: ScreenshotProvider = ScreenCaptureManager()
-
+        HeadlessAgentRuntime.initialize(this)
 
         ProcessLifecycleOwner.get().lifecycle.addObserver(AppLifecycleObserver(this@PromotorApplication))
-
-        val rootDir: String = MMKV.initialize(this)
-
 
         StatisticsManager.instance.initSDK()
         TimeUtils.init(applicationContext)
@@ -112,8 +103,8 @@ class PromotorApplication : Application(), LifecycleOwner, ViewModelStoreOwner {
                     TaskCenter.executionId ?: -1
                 )
                 MessageController.setBackgroundStatus(false)
-                AIFloatWindowManager.dismissAllWindow()
                 AIFloatWindowManager.hideExecuteTaskWindow("OpenGUI entered foreground")
+                HeadlessAgentRuntime.showStandbyIsland("foreground")
             }
         }
 
@@ -129,9 +120,9 @@ class PromotorApplication : Application(), LifecycleOwner, ViewModelStoreOwner {
                 )
                 if (hasActiveExecution && !TaskCenter.isSummarizing) {
                     MessageController.setBackgroundStatus(true)
-                    AIFloatWindowManager.getExecuteTaskWindow()?.reset("OpenGUI entered background")
-                    AIFloatWindowManager.showExecuteTaskWindow("OpenGUI entered background")
-                    AIFloatWindowManager.showGradientWindow("OpenGUI entered background")
+                    AIFloatWindowManager.showStandbyIsland("Task running", "OpenGUI entered background")
+                } else {
+                    HeadlessAgentRuntime.showStandbyIsland("background")
                 }
             }
         }

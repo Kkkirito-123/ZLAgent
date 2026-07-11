@@ -1,9 +1,14 @@
 """open_gui: operate an Android phone through OpenGUI."""
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -65,6 +70,22 @@ _SAFETY_SUFFIX = """\
 - 只观察、打开页面、滚动、读取状态、总结内容时可以继续。
 - 遇到支付、下单、发送消息、删除内容、授权登录、修改安全设置、输入密码、输入验证码、导出敏感数据时，必须暂停并请求用户确认，不要自行完成最终点击。
 - 如果页面状态不确定，先暂停并说明你看到了什么。"""
+
+_LOCAL_BACKEND_HOSTS = frozenset({
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    "host.docker.internal",
+})
+_OPENGUI_ANDROID_PACKAGE = "com.coremate.opengui"
+_BOOTSTRAP_DEVICE_POLL_ATTEMPTS = 15
+_BOOTSTRAP_DEVICE_POLL_INTERVAL_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class _AdbBootstrapResult:
+    attempted: bool
+    message: str
 
 
 class OpenGUITool(Tool):
@@ -274,16 +295,18 @@ class OpenGUITool(Tool):
         return ToolResult(ok=False, content="", error=f"unsupported action: {action}")
 
     async def _devices(self, args: dict[str, Any]) -> ToolResult:
-        client = self._client(args)
-        data = await client.list_devices()
+        base_url = self._resolve_base_url(args)
+        client = self._client(args, base_url=base_url)
+        data, bootstrap = await self._list_devices_with_bootstrap(client, base_url=base_url)
         devices = _normalise_devices(data)
         if not devices:
+            bootstrap_hint = f"\n\nLocal bootstrap: {bootstrap.message}" if bootstrap else ""
             return ToolResult(
                 ok=True,
                 content=(
                     "No OpenGUI devices are online. Start the OpenGUI Android"
                     " app, make sure the phone can reach the backend, and then"
-                    " run open_gui(action='devices') again."
+                    f" run open_gui(action='devices') again.{bootstrap_hint}"
                 ),
                 raw=data,
             )
@@ -302,7 +325,12 @@ class OpenGUITool(Tool):
         client = self._client(args, base_url=base_url)
         device_id = await self._resolve_device_id(args, client=client, binding=binding)
         query = _optional_string(args.get("query")) or _optional_string(args.get("app_name"))
-        payload = await client.list_device_apps(device_id, query=query)
+        payload = await self._list_device_apps_with_bootstrap(
+            client,
+            base_url=base_url,
+            device_id=device_id,
+            query=query,
+        )
         apps = _normalise_apps(payload)
         if not apps:
             query_part = f" matching '{query}'" if query else ""
@@ -327,10 +355,10 @@ class OpenGUITool(Tool):
         platform, user_id = self._identity(args)
         base_url = self._resolve_base_url(args)
         client = self._client(args, base_url=base_url)
-        data = await client.list_devices()
+        data, _ = await self._list_devices_with_bootstrap(client, base_url=base_url)
         devices = _normalise_devices(data)
         if not devices:
-            return ToolResult(ok=False, content="", error="no OpenGUI device is online")
+            return ToolResult(ok=False, content="", error=_no_online_device_error(base_url))
 
         requested = str(args.get("device_id") or "").strip()
         selected: Optional[dict[str, Any]] = None
@@ -424,7 +452,9 @@ class OpenGUITool(Tool):
             )
 
         client = self._client(args, base_url=base_url)
-        payload = await client.do_task(
+        payload = await self._dispatch_do_task_with_bootstrap(
+            client,
+            base_url=base_url,
             description=_with_safety_suffix(description),
             device_id=device_id,
             task_name=_optional_string(args.get("task_name")),
@@ -447,7 +477,12 @@ class OpenGUITool(Tool):
         device_id = await self._resolve_device_id(args, client=client, binding=binding)
 
         if app_name and not package_name:
-            apps_payload = await client.list_device_apps(device_id, query=app_name)
+            apps_payload = await self._list_device_apps_with_bootstrap(
+                client,
+                base_url=base_url,
+                device_id=device_id,
+                query=app_name,
+            )
             apps = _normalise_apps(apps_payload)
             matched_app, ambiguity = _select_app(apps, app_name)
             if ambiguity:
@@ -475,7 +510,9 @@ class OpenGUITool(Tool):
             app_name=app_name,
             package_name=package_name,
         )
-        payload = await client.do_task(
+        payload = await self._dispatch_do_task_with_bootstrap(
+            client,
+            base_url=base_url,
             description=_with_safety_suffix(description),
             device_id=device_id,
             task_name=f"Open app: {app_name or package_name}",
@@ -502,7 +539,9 @@ class OpenGUITool(Tool):
         client = self._client(args, base_url=base_url)
         device_id = await self._resolve_device_id(args, client=client, binding=binding)
 
-        payload = await client.do_task(
+        payload = await self._dispatch_do_task_with_bootstrap(
+            client,
+            base_url=base_url,
             description=_with_safety_suffix(_tap_description(x=x, y=y)),
             device_id=device_id,
             task_name=f"Tap: {x},{y}",
@@ -532,7 +571,9 @@ class OpenGUITool(Tool):
         client = self._client(args, base_url=base_url)
         device_id = await self._resolve_device_id(args, client=client, binding=binding)
         description = _simple_action_description(action)
-        payload = await client.do_task(
+        payload = await self._dispatch_do_task_with_bootstrap(
+            client,
+            base_url=base_url,
             description=_with_safety_suffix(description),
             device_id=device_id,
             task_name=action,
@@ -594,14 +635,14 @@ class OpenGUITool(Tool):
             return requested
         if binding is not None and binding.device_id:
             return binding.device_id
-        data = await client.list_devices()
+        data, _ = await self._list_devices_with_bootstrap(client, base_url=self._client_base_url(client))
         devices = _normalise_devices(data)
         if len(devices) == 1:
             device_id = str(devices[0].get("deviceId") or devices[0].get("device_id") or "").strip()
             if device_id:
                 return device_id
         if not devices:
-            raise ValueError("no OpenGUI device is online")
+            raise ValueError(_no_online_device_error(self._client_base_url(client)))
         choices = ", ".join(
             f"{d.get('deviceName') or d.get('deviceId')} ({d.get('deviceId')})"
             for d in devices
@@ -620,6 +661,72 @@ class OpenGUITool(Tool):
         if binding is not None and binding.opengui_base_url:
             return binding.opengui_base_url.rstrip("/")
         return self._base_url
+
+    async def _list_devices_with_bootstrap(
+        self,
+        client: OpenGUIClient,
+        *,
+        base_url: str,
+    ) -> tuple[dict[str, Any], Optional[_AdbBootstrapResult]]:
+        data = await client.list_devices()
+        if _normalise_devices(data):
+            return data, None
+
+        bootstrap = await _bootstrap_local_android(base_url)
+        if not bootstrap.attempted:
+            return data, bootstrap
+
+        for _ in range(_BOOTSTRAP_DEVICE_POLL_ATTEMPTS):
+            await asyncio.sleep(_BOOTSTRAP_DEVICE_POLL_INTERVAL_SECONDS)
+            data = await client.list_devices()
+            if _normalise_devices(data):
+                return data, bootstrap
+        return data, bootstrap
+
+    async def _list_device_apps_with_bootstrap(
+        self,
+        client: OpenGUIClient,
+        *,
+        base_url: str,
+        device_id: str,
+        query: Optional[str],
+    ) -> dict[str, Any]:
+        try:
+            return await client.list_device_apps(device_id, query=query)
+        except OpenGUIClientError as exc:
+            if not _looks_like_offline_device_error(str(exc)):
+                raise
+            await self._list_devices_with_bootstrap(client, base_url=base_url)
+            return await client.list_device_apps(device_id, query=query)
+
+    async def _dispatch_do_task_with_bootstrap(
+        self,
+        client: OpenGUIClient,
+        *,
+        base_url: str,
+        description: str,
+        device_id: Optional[str],
+        task_name: Optional[str],
+    ) -> dict[str, Any]:
+        try:
+            return await client.do_task(
+                description=description,
+                device_id=device_id,
+                task_name=task_name,
+            )
+        except OpenGUIClientError as exc:
+            if not _looks_like_offline_device_error(str(exc)):
+                raise
+            await self._list_devices_with_bootstrap(client, base_url=base_url)
+            return await client.do_task(
+                description=description,
+                device_id=device_id,
+                task_name=task_name,
+            )
+
+    @staticmethod
+    def _client_base_url(client: OpenGUIClient) -> str:
+        return str(getattr(client, "base_url", "") or "").rstrip("/")
 
     def _optional_binding(self, args: dict[str, Any]) -> Optional[GuiDeviceBindingSnapshot]:
         try:
@@ -668,6 +775,164 @@ def _normalise_action(args: dict[str, Any]) -> str:
     if action in {"binding", "current", "current_device"}:
         return "current_binding"
     return action
+
+
+async def _bootstrap_local_android(base_url: str) -> _AdbBootstrapResult:
+    if not _should_bootstrap_local_android(base_url):
+        return _AdbBootstrapResult(
+            attempted=False,
+            message="Skipped because the OpenGUI backend URL is not local.",
+        )
+
+    adb = shutil.which("adb")
+    if not adb:
+        return _AdbBootstrapResult(
+            attempted=False,
+            message="Skipped because adb is not available on PATH.",
+        )
+
+    port = _backend_port(base_url)
+    if not port:
+        return _AdbBootstrapResult(
+            attempted=False,
+            message=f"Skipped because no backend port could be parsed from {base_url}.",
+        )
+
+    devices_result = await _run_process([adb, "devices"])
+    if devices_result[0] != 0:
+        return _AdbBootstrapResult(
+            attempted=True,
+            message=f"adb devices failed: {devices_result[2] or devices_result[1]}",
+        )
+
+    serials = _parse_adb_device_serials(devices_result[1])
+    if not serials:
+        return _AdbBootstrapResult(
+            attempted=True,
+            message="adb is available, but no authorized Android device is connected.",
+        )
+
+    details: list[str] = []
+    for serial in serials:
+        reverse = await _run_process([
+            adb,
+            "-s",
+            serial,
+            "reverse",
+            f"tcp:{port}",
+            f"tcp:{port}",
+        ])
+        if reverse[0] == 0:
+            details.append(f"{serial}: adb reverse tcp:{port} OK")
+        else:
+            details.append(
+                f"{serial}: adb reverse failed: {reverse[2] or reverse[1]}"
+            )
+            continue
+
+        launch = await _run_process([
+            adb,
+            "-s",
+            serial,
+            "shell",
+            "monkey",
+            "-p",
+            _OPENGUI_ANDROID_PACKAGE,
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "1",
+        ])
+        if launch[0] == 0:
+            details.append(f"{serial}: OpenGUI launch requested")
+        else:
+            details.append(
+                f"{serial}: OpenGUI launch failed: {launch[2] or launch[1]}"
+            )
+
+    return _AdbBootstrapResult(
+        attempted=True,
+        message="; ".join(details),
+    )
+
+
+def _should_bootstrap_local_android(base_url: str) -> bool:
+    flag = os.environ.get("ZLAGENT_OPENGUI_ADB_BOOTSTRAP", "1").strip().casefold()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").strip().casefold()
+    return host in _LOCAL_BACKEND_HOSTS
+
+
+def _backend_port(base_url: str) -> Optional[int]:
+    parsed = urlparse(base_url)
+    if parsed.port:
+        return parsed.port
+    if parsed.scheme == "http":
+        return 80
+    if parsed.scheme == "https":
+        return 443
+    return None
+
+
+async def _run_process(args: list[str], timeout_seconds: float = 8.0) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        return 124, "", f"timed out after {timeout_seconds:.0f}s"
+    return (
+        process.returncode or 0,
+        stdout.decode(errors="replace").strip(),
+        stderr.decode(errors="replace").strip(),
+    )
+
+
+def _parse_adb_device_serials(output: str) -> list[str]:
+    serials: list[str] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("List of devices"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            serial = parts[0].strip()
+            if serial and serial not in serials:
+                serials.append(serial)
+    return serials
+
+
+def _no_online_device_error(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").strip().casefold()
+    if host in _LOCAL_BACKEND_HOSTS:
+        port = _backend_port(base_url) or 7777
+        return (
+            "no OpenGUI device is online; checked local adb bootstrap. "
+            f"Make sure the Android app is installed/running and adb reverse tcp:{port} tcp:{port} is active."
+        )
+    return (
+        "no OpenGUI device is online; make sure the Android app can reach "
+        f"the configured backend {base_url}."
+    )
+
+
+def _looks_like_offline_device_error(message: str) -> bool:
+    text = message.casefold()
+    return (
+        "device" in text
+        and "online" in text
+        and ("not online" in text or "no online" in text)
+    )
 
 
 def _normalise_devices(data: dict[str, Any]) -> list[dict[str, Any]]:
