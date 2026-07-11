@@ -189,7 +189,7 @@ M16     LANDED   持久 worker 所有权和重试预算
 M17     LANDED   真实任务提交与执行 MVP
 M18     LANDED   可靠性和发布门槛
 M19-M20 DEFERRED 可选迁移和安全 DAG 并发
-M21     LOCAL    根目录提升与旧迁移关闭，等待最终 clean-checkout 证据
+M21     LANDED   根目录提升与旧迁移关闭已通过全新 checkout 验证
 ```
 
 本地产品 MVP 已支持持久化提交、worker 执行、批准恢复，以及跨进程重启读取
@@ -314,8 +314,8 @@ PYTHONPATH=src python -m re_zlagent.check --pretty
 
 ## 下一步
 
-核心迁移正在 M21 中关闭。后续产品工作必须先形成明确路线图决策：M19 负责独立可选
-能力切片，M20 负责安全 DAG 并发。不得从恢复标签整体搬回任何 deferred 能力。
+核心迁移已经关闭。后续产品工作必须先形成明确路线图决策：M19 负责独立可选能力
+切片，M20 负责安全 DAG 并发。不得从恢复标签整体搬回任何 deferred 能力。
 
 Wiki、Graph-RAG 和 geo 已从当前目标中移除。MCP、cron、OpenGUI 和 DAG 并发明确延后。
 

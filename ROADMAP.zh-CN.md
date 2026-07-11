@@ -114,7 +114,7 @@
 | M18 | `LANDED` | 增加 CI、benchmark、故障注入和时延/可靠性门槛。 |
 | M19 | `DEFERRED` | 按独立切片迁移经过选择的可选能力。 |
 | M20 | `DEFERRED` | 所有前置门槛通过后启用安全 DAG 并发。 |
-| M21 | `LOCAL` | 把重构提升到根目录并关闭已批准的旧迁移。 |
+| M21 | `LANDED` | 把重构提升到根目录并关闭已批准的旧迁移。 |
 
 ## 6. 历史阶段
 
@@ -388,7 +388,7 @@ Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成
 
 ### M21 - 迁移关闭与旧源码删除
 
-**状态：** `LOCAL`
+**状态：** `LANDED`
 
 **目标：** 让 `re_zlagent` 成为唯一维护的 ZLAgent 实现。
 
@@ -396,7 +396,7 @@ Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成
 
 - M13-M18 已完成
 - 每个旧能力都已标记为 replaced、明确 removed，或带负责人和原因的 deferred
-- 产品需要的 M19 切片已完成
+- 产品需要的 M19 切片已完成；已批准的本地核心关闭不要求任何 M19 切片
 - 源码和测试不再 import 旧 backend
 - 端到端和 benchmark 门槛通过
 - 已创建仓库备份/tag 和回滚说明
@@ -419,7 +419,10 @@ Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成
 5. `.env`、`workspace/`、数据库、日志、credential 和其他 runtime data 未被删除或
    提交。约 1.9 GB 被旧规则忽略的构建/运行产物原样移动到
    `.zlagent/legacy-runtime/`。
-6. M21 从 `LOCAL` 变为 `LANDED` 前，必须取得根目录 release gate 和全新 checkout 证据。
+6. Commit `902ac53` 记录根目录提升和 tracked 旧源码删除。正式根目录与 detached
+   clean checkout 都通过 release gate：308 项测试、6/6 benchmark、compileall、
+   Ruff、对 82 个源码文件执行 mypy、CLI smoke 和 package dry-run；安装后的 console
+   entry point 也通过检查。
 7. 代码通过 annotated promotion 前 tag 回滚；runtime data 必须使用独立备份恢复。
 
 **关闭前仓库审计结果（2026-07-11）：** Git 跟踪 2,338 个文件，其中
@@ -428,6 +431,9 @@ Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成
 tracked 文件；`re_zlagent/` 外存在 31 个修改文件、3 个 tracked 删除和 4 个
 untracked 路径。已批准关闭把这些改动保存到 Git，并把活跃 index 缩减为 171 个
 tracked 文件，其中包含明确保留的 23 个 `workspace/` 文件。
+
+M21 因此满足退出门槛。当前没有自动开始的下一阶段；M19 或 M20 只能在新的产品决策
+和批准后开始。
 
 ## 8. 能力决策
 

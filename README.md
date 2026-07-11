@@ -253,7 +253,7 @@ M16     LANDED   durable worker ownership and retry budgets
 M17     LANDED   real task submission and execution MVP
 M18     LANDED   reliability and release gates
 M19-M20 DEFERRED optional migrations and safe DAG concurrency
-M21     LOCAL    root promotion and legacy closure awaiting final clean-checkout evidence
+M21     LANDED   root promotion and legacy closure verified from a clean checkout
 ```
 
 The local product MVP supports persisted submission, worker execution, approval
@@ -475,10 +475,10 @@ Current tests cover:
 
 ## Next Work
 
-The core migration is closing in M21. Future product work must begin with an
-explicit roadmap decision: M19 owns bounded optional capability slices and M20
-owns safe DAG concurrency. No deferred capability should be restored wholesale
-from the legacy tag.
+The core migration is closed. Future product work must begin with an explicit
+roadmap decision: M19 owns bounded optional capability slices and M20 owns safe
+DAG concurrency. No deferred capability should be restored wholesale from the
+legacy tag.
 
 Wiki, Graph-RAG, and geo are removed from the current target. MCP, cron, OpenGUI,
 and DAG concurrency are explicitly deferred.

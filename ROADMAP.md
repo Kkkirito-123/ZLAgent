@@ -138,7 +138,7 @@ Every stage must preserve these invariants:
 | M18 | `LANDED` | Add CI, benchmarks, fault injection, and latency/reliability gates. |
 | M19 | `DEFERRED` | Migrate selected optional capabilities one bounded slice at a time. |
 | M20 | `DEFERRED` | Enable safe DAG concurrency after all prerequisite gates pass. |
-| M21 | `LOCAL` | Promote the rebuild to root and close the approved legacy migration. |
+| M21 | `LANDED` | Promote the rebuild to root and close the approved legacy migration. |
 
 ## 6. Historical Stages
 
@@ -477,7 +477,7 @@ accepted outcomes for the same deterministic scenario.
 
 ### M21 - Migration closure and legacy deletion
 
-**Status:** `LOCAL`
+**Status:** `LANDED`
 
 **Objective:** Make `re_zlagent` the only maintained ZLAgent implementation.
 
@@ -486,7 +486,7 @@ accepted outcomes for the same deterministic scenario.
 - M13-M18 are complete
 - every old capability is marked replaced, intentionally removed, or explicitly
   deferred with owner and reason
-- required M19 slices are complete
+- required M19 slices are complete; the approved local-core closure required none
 - no source or test imports the old backend
 - end-to-end and benchmark gates pass
 - repository backup/tag and rollback instructions exist
@@ -513,8 +513,10 @@ from a clean checkout, and rollback evidence is retained outside the deleted tre
 5. `.env`, `workspace/`, databases, logs, credentials, and other runtime data were
    not deleted or committed. Approximately 1.9 GB of ignored legacy build/runtime
    artifacts was moved intact to `.zlagent/legacy-runtime/`.
-6. Root release-gate and clean-checkout evidence are required before M21 can move
-   from `LOCAL` to `LANDED`.
+6. Commit `902ac53` records the root promotion and tracked legacy deletion. Both
+   the canonical root and a detached clean checkout passed the release gate:
+   308 tests, 6/6 benchmarks, compileall, Ruff, mypy over 82 source files, CLI
+   smoke checks, and package dry-run. Installed console entry points also passed.
 7. Code rollback uses the annotated pre-promotion tag. Runtime data rollback stays
    outside Git and requires its own backup.
 
@@ -525,6 +527,9 @@ legacy product change affected 2,208 tracked files. Outside `re_zlagent/`, the
 worktree contained 31 modified files, 3 tracked deletions, and 4 untracked paths.
 The approved closure preserved those entries in Git and reduced the active index
 to 171 tracked files, including 23 intentionally retained `workspace/` files.
+
+M21 therefore satisfies its exit gate. There is no automatically active next
+stage; M19 or M20 starts only after a new product decision and approval.
 
 ## 8. Capability Decisions
 
