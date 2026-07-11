@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,8 +13,28 @@ sys.path.insert(0, str(ROOT / "src"))
 from re_zlagent.app import ApplicationBootstrapConfig, build_application_container  # noqa: E402
 from re_zlagent.gateway import DeliveryTarget, IncomingMessage  # noqa: E402
 from re_zlagent.harness.agent import AgentPlan, StaticAgentPlanner  # noqa: E402
-from re_zlagent.harness.runtime import RuntimeAcceptanceInput  # noqa: E402
+from re_zlagent.harness.runtime import RuntimeToolStep  # noqa: E402
 from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract  # noqa: E402
+from re_zlagent.harness.tools import (  # noqa: E402
+    Evidence,
+    Tool,
+    ToolPermission,
+    ToolRegistry,
+    ToolResult,
+)
+
+
+class BootstrapEvidenceTool(Tool):
+    name = "bootstrap_evidence"
+    description = "Emit trusted test evidence through the runtime tool path."
+    permission = ToolPermission.SAFE
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        return ToolResult.success(
+            "bootstrap evidence",
+            evidence=[Evidence(type="test", ref="bootstrap:evidence")],
+            source=self.name,
+        )
 
 
 class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
@@ -27,12 +48,19 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
                         id="manual-evidence",
                         description="manual evidence",
                         type=CriterionType.TOOL_EVIDENCE,
-                        evidence_refs=("manual:evidence",),
+                        evidence_refs=("bootstrap:evidence",),
                     ),
                 ),
             ),
-            acceptance=RuntimeAcceptanceInput(evidence_refs=("manual:evidence",)),
+            steps=(
+                RuntimeToolStep(id="evidence", tool_name="bootstrap_evidence"),
+            ),
         )
+
+    def _registry(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(BootstrapEvidenceTool())
+        return registry
 
     def _message(self) -> IncomingMessage:
         target = DeliveryTarget(
@@ -52,6 +80,7 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             container = build_application_container(
                 planner=StaticAgentPlanner(self._plan()),
+                tool_registry=self._registry(),
                 config=ApplicationBootstrapConfig(workspace_dir=Path(tmp)),
             )
 
@@ -60,22 +89,25 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
             runtime = container.facade.runtime().to_dict()
             operator_snapshot = container.operator.status("missing-run").to_dict()
             approvals = container.approvals
+            long_task_store = container.long_task_store
             container.close()
 
         self.assertTrue(result.agent_result.accepted)
         self.assertEqual(result.outgoing.metadata["status"], "completed")
-        self.assertEqual(inventory["counts"]["tools"], 2)
+        self.assertEqual(inventory["counts"]["tools"], 3)
         self.assertTrue(runtime["components"]["tool_registry"])
         self.assertTrue(runtime["components"]["task_store"])
         self.assertTrue(runtime["components"]["progress_reader"])
         self.assertFalse(operator_snapshot["ok"])
         self.assertIsNotNone(approvals)
+        self.assertIsNotNone(long_task_store)
 
     async def test_bootstrap_can_use_sqlite_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sqlite_path = Path(tmp) / "tasks.sqlite"
             container = build_application_container(
                 planner=StaticAgentPlanner(self._plan()),
+                tool_registry=self._registry(),
                 config=ApplicationBootstrapConfig(
                     sqlite_path=sqlite_path,
                     register_file_tools=False,
@@ -84,6 +116,7 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
             await container.app.handle_message(self._message())
             events = container.store.list_events("msg-m1")
+            container.long_task_store.list_side_effects("msg-m1")
             self.assertTrue(sqlite_path.exists())
             container.close()
 

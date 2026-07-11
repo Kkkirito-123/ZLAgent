@@ -14,7 +14,13 @@ from re_zlagent.harness import build_harness_facade  # noqa: E402
 from re_zlagent.harness.progress import TaskProgressReader  # noqa: E402
 from re_zlagent.harness.skills import FileSystemSkillLoader  # noqa: E402
 from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
-from re_zlagent.harness.tools import Tool, ToolPermission, ToolRegistry, ToolResult  # noqa: E402
+from re_zlagent.harness.tools import (  # noqa: E402
+    SideEffect,
+    Tool,
+    ToolPermission,
+    ToolRegistry,
+    ToolResult,
+)
 
 
 class FacadeReadTool(Tool):
@@ -33,7 +39,14 @@ class FacadeWriteTool(Tool):
     is_read_only = False
     is_destructive = True
     side_effects = ("filesystem",)
+    outbox_required = True
     interrupt_behavior = "cancel"
+
+    def plan_side_effects(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[SideEffect, ...]:
+        return (SideEffect(type="filesystem", target="facade"),)
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         return ToolResult.success("ok", source=self.name)

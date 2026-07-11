@@ -13,6 +13,34 @@ sys.path.insert(0, str(IMPORT_ROOT))
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_repository_ignores_local_secrets_but_keeps_env_template(self) -> None:
+        rules = {
+            line.strip()
+            for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+        self.assertIn(".env", rules)
+        self.assertIn(".env.*", rules)
+        self.assertIn("!.env.example", rules)
+
+    def test_rebuild_does_not_import_legacy_backend(self) -> None:
+        violations: list[str] = []
+        for root in (PACKAGE_ROOT, ROOT / "tests"):
+            for path in root.rglob("*.py"):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            if alias.name.split(".")[0] == "backend":
+                                violations.append(f"{path}: import {alias.name}")
+                    elif isinstance(node, ast.ImportFrom):
+                        module = node.module or ""
+                        if module.split(".")[0] == "backend":
+                            violations.append(f"{path}: from {module} import ...")
+
+        self.assertEqual(violations, [])
+
     def test_harness_does_not_import_app_or_gateway(self) -> None:
         violations: list[str] = []
         for path in (PACKAGE_ROOT / "harness").rglob("*.py"):

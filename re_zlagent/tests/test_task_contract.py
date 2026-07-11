@@ -43,6 +43,21 @@ class TaskContractTests(unittest.TestCase):
                 acceptance_criteria=(criterion, criterion),
             )
 
+    def test_contract_requires_at_least_one_required_criterion(self) -> None:
+        optional = AcceptanceCriterion(
+            id="optional",
+            description="optional evidence",
+            type=CriterionType.TOOL_EVIDENCE,
+            required=False,
+        )
+
+        with self.assertRaises(ValueError):
+            TaskContract(
+                id="task-1",
+                user_goal="ship task",
+                acceptance_criteria=(optional,),
+            )
+
     def test_contract_normalizes_tuple_and_dict_fields(self) -> None:
         contract = TaskContract(
             id="task-1",

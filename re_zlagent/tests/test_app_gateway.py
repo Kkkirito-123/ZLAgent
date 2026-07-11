@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,10 +12,30 @@ sys.path.insert(0, str(ROOT / "src"))
 from re_zlagent.app import AgentApplication  # noqa: E402
 from re_zlagent.gateway import DeliveryTarget, IncomingMessage  # noqa: E402
 from re_zlagent.harness.agent import AgentOrchestrator, AgentPlan, StaticAgentPlanner  # noqa: E402
-from re_zlagent.harness.runtime import HarnessRuntime, RuntimeAcceptanceInput  # noqa: E402
+from re_zlagent.harness.runtime import HarnessRuntime, RuntimeToolStep  # noqa: E402
 from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
 from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract, TaskRunStatus  # noqa: E402
-from re_zlagent.harness.tools import ToolRegistry  # noqa: E402
+from re_zlagent.harness.tools import (  # noqa: E402
+    Evidence,
+    Tool,
+    ToolPermission,
+    ToolRegistry,
+    ToolResult,
+)
+
+
+class AppEvidenceTool(Tool):
+    name = "app_evidence"
+    description = "Emit trusted app test evidence through the runtime."
+    permission = ToolPermission.SAFE
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        ref = str(arguments.get("ref") or "app:evidence")
+        return ToolResult.success(
+            "app evidence",
+            evidence=[Evidence(type="test", ref=ref)],
+            source=self.name,
+        )
 
 
 class AppGatewayTests(unittest.IsolatedAsyncioTestCase):
@@ -44,9 +65,11 @@ class AppGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def _app(self, plan: AgentPlan) -> AgentApplication:
+        tools = ToolRegistry()
+        tools.register(AppEvidenceTool())
         runtime = HarnessRuntime(
             store=InMemoryTaskStore(),
-            tools=ToolRegistry(),
+            tools=tools,
         )
         return AgentApplication(
             orchestrator=AgentOrchestrator(
@@ -62,10 +85,16 @@ class AppGatewayTests(unittest.IsolatedAsyncioTestCase):
                     id="manual-evidence",
                     description="manual evidence",
                     type=CriterionType.TOOL_EVIDENCE,
-                    evidence_refs=("manual:evidence",),
+                    evidence_refs=("app:evidence",),
                 )
             ),
-            acceptance=RuntimeAcceptanceInput(evidence_refs=("manual:evidence",)),
+            steps=(
+                RuntimeToolStep(
+                    id="evidence",
+                    tool_name="app_evidence",
+                    arguments={"ref": "app:evidence"},
+                ),
+            ),
         )
         app = self._app(plan)
 

@@ -19,7 +19,7 @@ from re_zlagent.harness.runtime import (
     HarnessRuntime,
     RunControlResult,
     RunControlService,
-    RuntimeAcceptanceInput,
+    RuntimeAcceptanceFacts,
     RuntimeResult,
 )
 from re_zlagent.harness.storage import TaskStore
@@ -204,7 +204,7 @@ class ApprovalService:
         *,
         checkpoint_id: str | None = None,
         feedback: str = "",
-        acceptance: RuntimeAcceptanceInput | None = None,
+        acceptance_facts: RuntimeAcceptanceFacts | None = None,
         interactive: bool = True,
     ) -> ApprovalResponse:
         """Approve and resume a waiting-user checkpoint through runtime."""
@@ -214,7 +214,7 @@ class ApprovalService:
                 run_id=run_id,
                 checkpoint_id=checkpoint_id,
                 feedback=feedback,
-                acceptance=acceptance,
+                acceptance_facts=acceptance_facts,
                 interactive=interactive,
             )
         except ValueError as exc:

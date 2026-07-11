@@ -15,10 +15,21 @@ from re_zlagent.harness.agent import (  # noqa: E402
     AgentRunRequest,
     StaticAgentPlanner,
 )
-from re_zlagent.harness.runtime import HarnessRuntime, RuntimeAcceptanceInput, RuntimeToolStep  # noqa: E402
+from re_zlagent.harness.runtime import HarnessRuntime, RuntimeToolStep  # noqa: E402
 from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
-from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract, TaskRunStatus  # noqa: E402
-from re_zlagent.harness.tools import Evidence, Tool, ToolPermission, ToolRegistry, ToolResult  # noqa: E402
+from re_zlagent.harness.tasking import (  # noqa: E402
+    AcceptanceCriterion,
+    CriterionType,
+    TaskContract,
+    TaskRunStatus,
+)
+from re_zlagent.harness.tools import (  # noqa: E402
+    Evidence,
+    Tool,
+    ToolPermission,
+    ToolRegistry,
+    ToolResult,
+)
 
 
 class EvidenceTool(Tool):
@@ -93,7 +104,13 @@ class AgentOrchestratorTests(unittest.IsolatedAsyncioTestCase):
     async def test_planner_receives_request_context(self) -> None:
         plan = AgentPlan(
             contract=self._contract(),
-            acceptance=RuntimeAcceptanceInput(evidence_refs=("agent:evidence",)),
+            steps=(
+                RuntimeToolStep(
+                    id="step-1",
+                    tool_name="evidence",
+                    arguments={"ref": "agent:evidence"},
+                ),
+            ),
         )
         planner = RecordingPlanner(plan)
         orchestrator = AgentOrchestrator(planner=planner, runtime=self._runtime())
@@ -136,6 +153,39 @@ class AgentOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result.runtime_result.run.status,
             TaskRunStatus.ACCEPTANCE_FAILED,
+        )
+
+    async def test_submit_persists_created_plan_without_executing_tools(self) -> None:
+        store = InMemoryTaskStore()
+        registry = ToolRegistry()
+        registry.register(EvidenceTool())
+        runtime = HarnessRuntime(store=store, tools=registry)
+        plan = AgentPlan(
+            contract=self._contract(),
+            steps=(RuntimeToolStep(id="step-1", tool_name="evidence"),),
+            metadata={"planner": "static"},
+        )
+        orchestrator = AgentOrchestrator(
+            planner=StaticAgentPlanner(plan),
+            runtime=runtime,
+        )
+
+        result = await orchestrator.submit(
+            AgentRunRequest(
+                run_id="run-submit",
+                user_goal="persist first",
+                context={"channel": "local"},
+            )
+        )
+
+        self.assertEqual(result.runtime_submission.run.status, TaskRunStatus.CREATED)
+        self.assertEqual(
+            result.runtime_submission.plan.metadata["request_context"],
+            {"channel": "local"},
+        )
+        self.assertEqual(
+            [event.type.value for event in store.list_events("run-submit")],
+            ["run_created"],
         )
 
     def test_plan_rejects_duplicate_step_ids(self) -> None:

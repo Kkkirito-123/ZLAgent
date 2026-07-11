@@ -56,9 +56,11 @@ class RecoveryPolicy:
         if result.ok:
             raise ValueError("cannot create recovery envelope from successful tool result")
 
-        action = self._action_map.get(
-            result.recommended_next_action,
-            RecoveryAction.MANUAL_REVIEW,
+        recommended = result.recommended_next_action
+        action = (
+            self._action_map.get(recommended, RecoveryAction.MANUAL_REVIEW)
+            if recommended is not None
+            else RecoveryAction.MANUAL_REVIEW
         )
         failure_type = self._failure_type(result)
         status = self._status(result, action)

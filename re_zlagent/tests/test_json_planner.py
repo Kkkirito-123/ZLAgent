@@ -20,13 +20,14 @@ from re_zlagent.harness.tasking import CriterionType  # noqa: E402
 
 
 class FakeModel:
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, *, raw: dict | None = None) -> None:
         self.content = content
+        self.raw = dict(raw or {})
         self.messages: tuple[ModelMessage, ...] = ()
 
     async def complete(self, messages: tuple[ModelMessage, ...]) -> ModelResponse:
         self.messages = messages
-        return ModelResponse(content=self.content)
+        return ModelResponse(content=self.content, raw=self.raw)
 
 
 def _plan_json(**overrides) -> str:
@@ -50,11 +51,6 @@ def _plan_json(**overrides) -> str:
                 "arguments": {"path": "README.md"},
             }
         ],
-        "acceptance": {
-            "evidence_refs": ["manual:evidence"],
-            "passed_tests": [],
-            "human_approvals": [],
-        },
     }
     data.update(overrides)
     return json.dumps(data)
@@ -62,19 +58,49 @@ def _plan_json(**overrides) -> str:
 
 class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
     async def test_json_planner_calls_model_and_returns_agent_plan(self) -> None:
-        model = FakeModel(_plan_json())
-        planner = JsonPlanPlanner(model)
-
-        plan = await planner.plan(
-            AgentRunRequest(run_id="run-1", user_goal="ship plan")
+        model = FakeModel(
+            _plan_json(),
+            raw={"provider": "test", "model": "planner", "usage": {"input": 1}},
+        )
+        planner = JsonPlanPlanner(
+            model,
+            tool_schemas=[
+                {
+                    "name": "read_file",
+                    "input_schema": {"type": "object"},
+                    "permission": "safe",
+                }
+            ],
         )
 
-        self.assertEqual(plan.contract.id, "contract-1")
-        self.assertEqual(plan.contract.acceptance_criteria[0].type, CriterionType.TOOL_EVIDENCE)
+        plan = await planner.plan(
+            AgentRunRequest(
+                run_id="run-1",
+                user_goal="ship plan",
+                context={"channel": "cli"},
+            )
+        )
+
+        self.assertEqual(plan.contract.id, "contract_run-1")
+        self.assertEqual(plan.contract.user_goal, "ship plan")
+        self.assertEqual(
+            plan.contract.acceptance_criteria[0].type, CriterionType.TOOL_EVIDENCE
+        )
         self.assertEqual(plan.steps[0].tool_name, "read_file")
-        self.assertEqual(plan.acceptance.evidence_refs, ("manual:evidence",))
+        self.assertFalse(hasattr(plan, "acceptance"))
+        self.assertEqual(plan.metadata["proposed_contract_id"], "contract-1")
+        self.assertEqual(plan.metadata["provider"], "test")
         self.assertEqual(model.messages[0].role, "system")
         self.assertEqual(model.messages[1].role, "user")
+        self.assertIn('"channel": "cli"', model.messages[1].content)
+        self.assertIn('"name": "read_file"', model.messages[1].content)
+
+    async def test_planner_rejects_tool_outside_host_schema(self) -> None:
+        model = FakeModel(_plan_json())
+        planner = JsonPlanPlanner(model, tool_schemas=[])
+
+        with self.assertRaisesRegex(PlanParseError, "unavailable tools"):
+            await planner.plan(AgentRunRequest(run_id="run-1", user_goal="ship plan"))
 
     def test_parse_step_metadata_and_dependencies(self) -> None:
         data = json.loads(_plan_json())
@@ -129,7 +155,7 @@ class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
     def test_parse_rejects_missing_contract_list_fields(self) -> None:
         with self.assertRaises(PlanParseError):
             parse_agent_plan(
-                json.dumps({"contract": {"id": "c"}, "steps": [], "acceptance": {}}),
+                json.dumps({"contract": {"id": "c"}, "steps": []}),
                 fallback_goal="goal",
             )
 
@@ -147,12 +173,41 @@ class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             parse_agent_plan(json.dumps(bad), fallback_goal="goal")
 
-    def test_parse_rejects_llm_supplied_freshness_timestamps(self) -> None:
-        bad = json.loads(_plan_json())
-        bad["acceptance"]["freshness_by_ref"] = {"web:source": "2026-07-09T00:00:00Z"}
+    def test_parse_rejects_all_llm_supplied_acceptance_facts(self) -> None:
+        payloads = (
+            {"evidence_refs": ["model:claim"]},
+            {"passed_tests": ["unit-tests"]},
+            {"human_approvals": ["approval"]},
+            {"freshness_by_ref": {"web:source": "2026-07-09T00:00:00Z"}},
+            {},
+        )
+        for acceptance in payloads:
+            with self.subTest(acceptance=acceptance):
+                bad = json.loads(_plan_json())
+                bad["acceptance"] = acceptance
+                with self.assertRaises(PlanParseError):
+                    parse_agent_plan(json.dumps(bad), fallback_goal="goal")
 
-        with self.assertRaises(PlanParseError):
+    def test_parse_rejects_model_granted_confirmation(self) -> None:
+        bad = json.loads(_plan_json())
+        bad["steps"][0]["allow_confirm"] = True
+
+        with self.assertRaisesRegex(PlanParseError, "cannot grant confirmation"):
             parse_agent_plan(json.dumps(bad), fallback_goal="goal")
+
+    def test_parse_rejects_values_that_need_implicit_type_coercion(self) -> None:
+        malformed = []
+        bad_required = json.loads(_plan_json())
+        bad_required["contract"]["acceptance_criteria"][0]["required"] = "false"
+        malformed.append(bad_required)
+        bad_arguments = json.loads(_plan_json())
+        bad_arguments["steps"][0]["arguments"] = []
+        malformed.append(bad_arguments)
+
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                with self.assertRaises(PlanParseError):
+                    parse_agent_plan(json.dumps(payload), fallback_goal="goal")
 
 
 if __name__ == "__main__":

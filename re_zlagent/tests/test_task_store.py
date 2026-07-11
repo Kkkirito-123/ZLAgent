@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -15,6 +16,9 @@ from re_zlagent.harness.tasking import (  # noqa: E402
     CriterionType,
     FailureEnvelope,
     FailureType,
+    PlanDAG,
+    PlanStep,
+    ProgramPlan,
     RecoveryAction,
     TaskContract,
     TaskEventType,
@@ -44,6 +48,13 @@ class InMemoryTaskStoreTests(unittest.TestCase):
         run = store.create_run(TaskRun(id="run-1", contract_id="contract-1"))
         return store, run
 
+    def _plan(self, *, title: str = "execute") -> ProgramPlan:
+        return ProgramPlan(
+            id="plan-1",
+            contract_id="contract-1",
+            dag=PlanDAG((PlanStep(id="step-1", title=title),)),
+        )
+
     def test_save_and_get_contract_returns_copy(self) -> None:
         store = InMemoryTaskStore()
         contract = self._contract()
@@ -55,6 +66,82 @@ class InMemoryTaskStoreTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.user_goal, "ship storage boundary")
         self.assertIsNot(loaded, contract)
+
+    def test_contract_save_is_idempotent_but_identity_is_immutable(self) -> None:
+        store = InMemoryTaskStore()
+        contract = self._contract()
+
+        first = store.save_contract(contract)
+        replay = store.save_contract(contract)
+        store.create_run(TaskRun(id="run-1", contract_id=contract.id))
+
+        self.assertEqual(replay, first)
+        with self.assertRaises(ValueError):
+            store.save_contract(replace(contract, user_goal="changed goal"))
+        self.assertEqual(
+            store.get_contract(store.get_run("run-1").contract_id),
+            contract,
+        )
+
+    def test_plan_roundtrip_is_idempotent_and_immutable(self) -> None:
+        store = InMemoryTaskStore()
+        store.save_contract(self._contract())
+        plan = self._plan()
+
+        first = store.save_plan(plan)
+        replay = store.save_plan(plan)
+        run = store.create_run(
+            TaskRun(id="run-1", contract_id="contract-1", plan_id=plan.id)
+        )
+
+        self.assertEqual(replay, first)
+        self.assertEqual(store.get_plan(plan.id), plan)
+        self.assertEqual(run.plan_id, plan.id)
+        with self.assertRaises(ValueError):
+            store.save_plan(self._plan(title="changed"))
+
+    def test_plan_requires_existing_contract_and_run_requires_existing_plan(self) -> None:
+        store = InMemoryTaskStore()
+        with self.assertRaises(ValueError):
+            store.save_plan(self._plan())
+
+        store.save_contract(self._contract())
+        with self.assertRaises(ValueError):
+            store.create_run(
+                TaskRun(
+                    id="run-1",
+                    contract_id="contract-1",
+                    plan_id="missing-plan",
+                )
+            )
+
+    def test_run_plan_contract_binding_is_immutable(self) -> None:
+        store = InMemoryTaskStore()
+        contract = self._contract()
+        other_contract = replace(contract, id="contract-2")
+        store.save_contract(contract)
+        store.save_contract(other_contract)
+        plan = self._plan()
+        other_plan = replace(plan, id="plan-2", contract_id="contract-2")
+        store.save_plan(plan)
+        store.save_plan(other_plan)
+
+        with self.assertRaises(ValueError):
+            store.create_run(
+                TaskRun(
+                    id="cross-boundary",
+                    contract_id="contract-2",
+                    plan_id=plan.id,
+                )
+            )
+
+        run = store.create_run(
+            TaskRun(id="run-1", contract_id=contract.id, plan_id=plan.id)
+        )
+        with self.assertRaises(ValueError):
+            store.update_run(replace(run, contract_id="contract-2"))
+        with self.assertRaises(ValueError):
+            store.update_run(replace(run, plan_id=other_plan.id))
 
     def test_create_run_requires_existing_contract(self) -> None:
         store = InMemoryTaskStore()

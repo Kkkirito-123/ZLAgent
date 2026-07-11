@@ -1,5 +1,7 @@
 # re_zlagent
 
+**Language:** [English](./README.md) | [Simplified Chinese](./README.zh-CN.md)
+
 `re_zlagent` is the new rebuild workspace for ZLAgent.
 
 The goal is to rebuild ZLAgent as a reusable agent harness first, then add application and gateway layers later. The old source outside this directory is reference-only until a migration slice is explicitly approved.
@@ -8,7 +10,10 @@ The goal is to rebuild ZLAgent as a reusable agent harness first, then add appli
 
 - `AGENTS.md` is a thin entry pointer.
 - `CLAUDE.md` is the source of truth for agent collaboration rules.
+- `ROADMAP.md` is the source of truth for delivery stages and migration status.
 - `CONTRIBUTING.md` keeps the short development workflow.
+- `*.zh-CN.md` files are human-facing translations. AI agents use the English
+  authority files.
 - Avoid long-lived process-document folders unless the user explicitly asks for them.
 
 ## Current Structure
@@ -20,6 +25,7 @@ re_zlagent/
 ├── CONTRIBUTING.md
 ├── pyproject.toml
 ├── README.md
+├── ROADMAP.md
 ├── src/
 │   └── re_zlagent/
 │       ├── check.py
@@ -59,11 +65,14 @@ App:
 - `DispatchResult`
 - `ApplicationBootstrapConfig`
 - `ApplicationContainer`
+- `ApplicationRuntimeContainer`
+- `LocalTaskAdapter`
 - `OperatorService`
 - `OperatorResponse`
 - `ApprovalService`
 - `ApprovalResponse`
 - `build_application_container`
+- `build_application_runtime`
 - `run_cli`
 
 Local check:
@@ -120,13 +129,26 @@ Tasking:
 - `StepStatus`
 - `StepVerification`
 - `StepVerifier`
+- `DagExecutionAssessment`
+- `DagExecutionPolicy`
+- `ProgramPlan`
+- `ProgramPhase`
+- `LongTaskProjector`
+- `LongTaskProjection`
+- `PendingInteraction`
+- `ArtifactRecord`
+- `SideEffectRecord`
 
 Storage:
 
 - `TaskStore`
 - `InMemoryTaskStore`
+- `LongTaskStore`
+- `InMemoryLongTaskStore`
 - `SqliteTaskStore`
+- `SqliteLongTaskStore`
 - `PostgresTaskStore`
+- `PostgresLongTaskStore`
 
 Runtime:
 
@@ -134,9 +156,17 @@ Runtime:
 - `RunControlResult`
 - `RunControlService`
 - `RuntimeToolStep`
-- `RuntimeAcceptanceInput`
+- `RuntimeAcceptanceFacts`
 - `RuntimeResult`
+- `RuntimeSubmission`
+- `ContextPack`
+- `ContextPackBuilder`
+- `ParkedRunCandidate`
+- `ParkedRunKind`
+- `ParkedRunScanner`
+- `DurableWorker`
 - `HarnessRuntime`
+- `HarnessRuntime.submit`
 - `HarnessRuntime.resume_from_checkpoint`
 - `HarnessRuntime.resume_with_alternative_tool`
 - `HarnessRuntime.resume_with_user_approval`
@@ -149,6 +179,7 @@ Agent orchestration:
 - `StaticAgentPlanner`
 - `JsonPlanPlanner`
 - `AgentOrchestrator`
+- `AgentOrchestrator.submit`
 
 Model:
 
@@ -156,6 +187,7 @@ Model:
 - `ModelResponse`
 - `ModelClient`
 - `OpenAICompatibleModelClient`
+- `OpenAICompatibleModelConfig`
 
 Memory:
 
@@ -192,61 +224,97 @@ Evals:
 - `EvalSuiteResult`
 - `AgentEvalRunner`
 - `RunHealthMonitor`
+- `BenchmarkCorpus`
+- `ReleaseBenchmarkRunner`
+- `ReleaseBenchmarkReport`
 
 Progress:
 
 - `TaskProgressReader`
 - `TaskProgressSnapshot`
+- `LongTaskProgressReader`
+- `LongTaskProgressSnapshot`
 
-## Migration Closure Status
+## Delivery Status
 
-The rebuild is not a full replacement for the old `backend/` yet. Current status:
-
-```text
-re_zlagent harness foundation          implemented and tested
-linear stage-completion model          implemented and tested
-DAG expression model                   implemented and tested
-failure perturbation classification    implemented and tested
-user approval resume path              implemented and tested
-app operator control surface           implemented and tested
-app approval recovery surface          implemented and tested
-explicit alternative-tool recovery     implemented and tested
-old backend full capability parity     not complete
-old backend deletion                   not allowed yet
-OpenGUI-specific migration             deferred
-```
-
-Capability ledger:
-
-| Old capability | Current `re_zlagent` status | Decision |
-| --- | --- | --- |
-| agent loop / tool loop | partially replaced | Keep the new `AgentPlanner -> HarnessRuntime -> AcceptanceGate` path instead of copying the old loop. |
-| tool registry / permission | replaced | Use the new structured `ToolResult` and permission metadata. |
-| checkpoints / recovery | replaced | Keep the new checkpoint and resume semantics. |
-| task store / sqlite / postgres | replaced | Use `TaskStore` semantics as the source of truth. |
-| app / gateway message boundary | foundation implemented | Use `AgentApplication` and `OperatorService` as app boundaries; add concrete IM/API adapters later. |
-| memory | partially replaced | Keep minimal versioned memory now; old curator/review flows are deferred. |
-| skills | partially replaced | Keep read-only loader and guard now; old `skill_manage` flows are deferred. |
-| MCP | not migrated | Migrate as a separate approved stage. |
-| cron / scheduled jobs | not migrated | Defer until the core harness is stable. |
-| OpenGUI tool | not migrated | Defer while `re_zlagent` remains harness-first. |
-| wiki / graph-rag / geo | not migrated | Defer as knowledge-system work. |
-| FastAPI API layer | not migrated | Build after the app/harness boundary is stable. |
-| confirmations | partially replaced | Confirm-tier semantics, user approval resume, and app approval service exist; concrete product confirmation adapters are deferred. |
-
-Closure stages:
+The rebuild is not a full replacement for the old `backend/` yet. The authoritative
+stage history, capability decisions, and acceptance gates are in
+[`ROADMAP.md`](./ROADMAP.md).
 
 ```text
-M1 migration ledger and scope freeze
-M2 minimal stage-completion model implemented
-M3 minimal replacement for core old-backend gaps implemented
-M4 failure-classification and recovery hardening implemented
-M5 DAG expression after linear stages are stable implemented
-M6 safe concurrency after DAG boundaries are stable paused
-M7 small regression/eval set after the runtime semantics settle
+M1-M5   LANDED   committed foundation and recovery boundaries
+M6-M12  LOCAL    long-task projection, ledger, storage, scanner, and progress
+M13     LOCAL    acceptance trust and immutable task truth
+M14     LOCAL    persisted plans and complete recovery continuation
+M15     LOCAL    crash-safe side-effect outbox
+M16     LOCAL    durable worker ownership and retry budgets
+M17     LOCAL    real task submission and execution MVP
+M18     LOCAL    reliability and release gates
+M19-M20 DEFERRED optional migrations and safe DAG concurrency
+M21     NEXT     final migration closure and legacy deletion gate
 ```
 
-Do not delete old source until the capability ledger says every required old capability is replaced, deferred by explicit decision, or intentionally removed.
+The local product MVP supports persisted submission, worker execution, approval
+recovery, and verified result reads across process restart. M18 adds a versioned
+six-case release corpus, semantic and latency thresholds, Ruff, mypy, and one
+machine-readable quality command. Its contained workflow becomes remotely active
+when `re_zlagent` becomes the repository root during M21.
+
+Old source deletion is forbidden before the M21 gate and explicit user approval.
+
+## Local Product CLI
+
+Configure an OpenAI-compatible planner without placing a secret in command
+arguments or persisted task metadata:
+
+```bash
+mkdir -p .zlagent
+export ZLAGENT_MODEL_BASE_URL="https://provider.example/v1"
+export ZLAGENT_MODEL_NAME="planner-model"
+export OPENAI_API_KEY="..."
+```
+
+Submit a plan. Submission persists the immutable contract, plan, request context,
+and a `created` run; it does not execute tools:
+
+```bash
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --workspace . \
+  submit run-001 "Read README.md and produce a verified result" \
+  --context-json '{"channel":"local"}'
+```
+
+Execute and inspect durable work:
+
+```bash
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . work run-001
+
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite status run-001
+```
+
+When `status.pending_interactions` contains an approval request, use its
+`resume_token`. Confirm-tier tools cannot be pre-approved by planner JSON:
+
+```bash
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . \
+  approve run-001 --resume-token RESUME_TOKEN --feedback "approved"
+```
+
+Read persisted outputs and acceptance truth without re-executing the task:
+
+```bash
+PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite result run-001
+```
+
+`result.result.verified` is true only when the stored run is `completed` and the
+latest persisted acceptance decision is accepted. For an unauthenticated local
+provider, pass `--no-api-key` explicitly. `work --until-idle` processes bounded
+claimable work, with `--max-ticks` preventing an unbounded foreground loop.
 
 ## Key Design Rules
 
@@ -260,6 +328,31 @@ Do not delete old source until the capability ledger says every required old cap
 - Runtime emits `plan_step_started` and `plan_step_verified` events for linear steps.
 - `TaskProgressReader.completed_steps` is derived from verified passed steps, not raw tool success.
 - `PlanDAG` validates dependency shape and linear order only; it does not schedule or parallelize.
+- `ProgramPlan` groups DAG steps into long-task phases; it does not execute them.
+- `LongTaskProjector` derives step, phase, frontier, and blocked state from append-only events, checkpoints, and pending interactions.
+- `PendingInteraction` is the durable wait point for user/operator input and carries a resume token.
+- `ContextPackBuilder` rebuilds resume context from stored state; chat history is not the source of truth.
+- `ProgramPlan` revisions are immutable, and a run cannot change its contract or plan binding.
+- Retry, alternative-tool, and approval recovery continue every unfinished verified frontier step.
+- Alternative tools satisfy the original persisted step; they cannot replace its identity, dependencies, or verification requirements.
+- Trusted runtime acceptance facts are append-only events and survive process restart.
+- `LongTaskStore` persists pending interactions, artifact records, and side-effect records; it does not replace `TaskStore`.
+- `InMemoryLongTaskStore` is the behavior baseline; `SqliteLongTaskStore` is the local durable SQL baseline.
+- `HarnessRuntime` writes tool side effects into `LongTaskStore` when one is configured; side-effect ledger writes must be idempotent by run and key.
+- Side-effect tools must declare deterministic intents before dispatch and require a durable outbox.
+- Logical side-effect keys bind run, plan revision, and original step, so retries reuse the same downstream idempotency key.
+- Outbox states are compare-and-set transitions across `planned`, `dispatching`, `applied`, `confirmed`, `failed`, `reverted`, and `uncertain`.
+- `uncertain` outcomes cannot auto-complete; reconciliation requires an explicit note and a replayable result when confirming success.
+- `RunLease` keeps worker ownership, heartbeat, retry budget, and backoff separate from `TaskRun.status`.
+- TaskStore adapters use compare-and-set for run control and exclusive worker claims.
+- `DurableWorker` only schedules; all execution, verification, recovery, and acceptance remain in `HarnessRuntime`.
+- `HarnessRuntime.submit` persists a plan and leaves the run `created`; only runtime/worker continuation executes tools.
+- Waiting-user, paused, cancelled, and terminal runs do not retain an active worker lease.
+- `ParkedRunScanner` classifies parked runs; it must not execute tools or mutate state.
+- `DagExecutionPolicy` gives conservative scheduling guidance; it must not schedule or execute DAG steps.
+- `LongTaskProgressReader` combines task progress, long-task projection, parked state, and DAG execution assessment as a read-only snapshot.
+- Long-task resume context includes contract, DAG frontier, checkpoint, open interactions, artifacts, evidence refs, recent events, and acceptance gaps.
+- Dependency-blocked steps are not executable frontier steps.
 - Failure envelopes classify perturbations by visibility and duration, such as `explicit_transient` and `implicit_permanent`.
 - Recoverable retry checkpoints can resume through `HarnessRuntime.resume_from_checkpoint`.
 - Ask-user checkpoints can resume through `HarnessRuntime.resume_with_user_approval`, then must pass step verification and acceptance again.
@@ -278,8 +371,10 @@ Do not delete old source until the capability ledger says every required old cap
 - `PostgresTaskStore` preserves append-only events and checkpoint semantics for PostgreSQL.
 - `HarnessRuntime` is the single deterministic lifecycle path before LLM planning is added.
 - `AgentPlanner` can produce a plan, but only `HarnessRuntime` executes tools and decides completion.
+- Model-planned tools are restricted to host-provided schemas, and model JSON cannot grant confirm-tier authority.
+- Model-planned contract ids and goals are rebound to host-owned request identity before persistence.
 - LLM output must validate into `AgentPlan` before execution.
-- Model provider adapters are thin transport boundaries; real keys and DSNs belong in app configuration.
+- Model provider adapters are thin transport boundaries; CLI keys are resolved only from an explicitly named environment variable.
 - Freshness timestamps must come from trusted runtime evidence, not model JSON.
 - Gateway/app are thin adapters around the harness, not alternate execution paths.
 - Public imports use the `re_zlagent.*` namespace; do not add top-level `app`, `gateway`, or `harness` packages.
@@ -302,11 +397,21 @@ Do not delete old source until the capability ledger says every required old cap
 
 ## Verification
 
-Run:
+Install the project quality tools, then run the single release gate:
+
+```bash
+python -m pip install -e 're_zlagent[dev]'
+PYTHONPATH=re_zlagent/src python -m re_zlagent.check
+```
+
+Individual commands remain available for diagnosis:
 
 ```bash
 PYTHONPATH=re_zlagent/src python -m re_zlagent.check --skip-package
-python -m unittest discover -s re_zlagent/tests
+PYTHONPATH=re_zlagent/src python -m unittest discover -s re_zlagent/tests -t re_zlagent
+PYTHONPATH=re_zlagent/src python -m re_zlagent.benchmark --pretty
+ruff check re_zlagent/src re_zlagent/tests
+mypy re_zlagent/src/re_zlagent
 python -m compileall re_zlagent/src re_zlagent/tests
 PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
 find re_zlagent -maxdepth 5 -type f | sort
@@ -320,6 +425,7 @@ Current tests cover:
 - app operator service
 - app approval service
 - app JSON CLI
+- persisted submit/work/approve/result restart flow
 - app dispatcher
 - tool result metadata
 - tool discovery
@@ -340,6 +446,11 @@ Current tests cover:
 - task store
 - sqlite task store
 - postgres task store
+- long-task ledger store
+- sqlite long-task ledger store
+- parked-run recovery scanner
+- DAG safe-execution policy
+- runtime side-effect ledger integration
 - runtime lifecycle
 - runtime checkpoint resume behavior
 - runtime run-control behavior
@@ -352,22 +463,25 @@ Current tests cover:
 - doctor and support bundle
 - harness doctor readiness check
 - eval scenario runner and realtime health monitor
+- versioned release benchmark corpus and blocking threshold report
+- false-completion, crash replay, restart approval, and expired-lease scenarios
 - task progress reader
+- long-task projection and pending interaction state
+- context pack builder for long-task resume
+- context pack loading from long-task ledger store
+- long-task progress reader
 - harness facade inventory and runtime snapshot
 - local check command orchestration
 
-## Not Implemented Yet
+## Next Work
 
-- live PostgreSQL DSN/config integration
-- production model provider config and secrets management
-- persistent benchmark corpus
-- automatic replan
-- product-level confirmation adapters and live IM/API approval flow
-- OpenGUI integration
-- MCP / cron / scheduled jobs migration
-- wiki / graph-rag / geo knowledge systems
-- safe concurrent DAG execution
-- old backend deletion
+M21 is the only next active stage. It audits every legacy capability, verifies
+that no new source imports the old backend, activates repository-root CI, creates
+rollback evidence, and requests explicit user approval before any deletion. See
+[`ROADMAP.md`](./ROADMAP.md) for its entry and deletion gates.
+
+Wiki, Graph-RAG, and geo are removed from the current target. MCP, cron, OpenGUI,
+and DAG concurrency are explicitly deferred.
 
 ## Package And CLI Smoke Checks
 

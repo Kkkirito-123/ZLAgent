@@ -17,10 +17,14 @@ from re_zlagent.harness.tasking import (
     Checkpoint,
     CheckpointStatus,
     FailureEnvelope,
+    ProgramPlan,
+    RunLease,
+    RunLeaseState,
     TaskContract,
     TaskEvent,
     TaskEventType,
     TaskRun,
+    TaskRunStatus,
 )
 from re_zlagent.harness.tools import Evidence, SideEffect
 
@@ -31,8 +35,18 @@ from .serde import (
     contract_to_dict,
     event_from_dict,
     event_to_dict,
+    program_plan_from_dict,
+    program_plan_to_dict,
+    run_lease_from_dict,
+    run_lease_to_dict,
     run_from_dict,
     run_to_dict,
+)
+from .task_store import (
+    ensure_immutable_contract_replay,
+    ensure_immutable_plan_replay,
+    ensure_immutable_run_binding,
+    ensure_plan_matches_run_contract,
 )
 
 
@@ -50,15 +64,23 @@ class SqliteTaskStore:
 
     def save_contract(self, contract: TaskContract) -> TaskContract:
         payload = json.dumps(contract_to_dict(contract), sort_keys=True)
-        with self._conn:
-            self._conn.execute(
-                """
-                insert into task_contracts (id, payload_json)
-                values (?, ?)
-                on conflict(id) do update set payload_json = excluded.payload_json
-                """,
-                (contract.id, payload),
-            )
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    insert into task_contracts (id, payload_json)
+                    values (?, ?)
+                    """,
+                    (contract.id, payload),
+                )
+        except sqlite3.IntegrityError as exc:
+            existing = self.get_contract(contract.id)
+            if existing is None:
+                raise
+            try:
+                return ensure_immutable_contract_replay(existing, contract)
+            except ValueError as conflict:
+                raise conflict from exc
         return contract_from_dict(json.loads(payload))
 
     def get_contract(self, contract_id: str) -> TaskContract | None:
@@ -70,9 +92,46 @@ class SqliteTaskStore:
             return None
         return contract_from_dict(json.loads(row["payload_json"]))
 
+    def save_plan(self, plan: ProgramPlan) -> ProgramPlan:
+        if self.get_contract(plan.contract_id) is None:
+            raise ValueError(f"unknown contract id: {plan.contract_id}")
+        payload = json.dumps(program_plan_to_dict(plan), sort_keys=True)
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    insert into task_plans (id, contract_id, payload_json)
+                    values (?, ?, ?)
+                    """,
+                    (plan.id, plan.contract_id, payload),
+                )
+        except sqlite3.IntegrityError as exc:
+            existing = self.get_plan(plan.id)
+            if existing is None:
+                raise
+            try:
+                return ensure_immutable_plan_replay(existing, plan)
+            except ValueError as conflict:
+                raise conflict from exc
+        return program_plan_from_dict(json.loads(payload))
+
+    def get_plan(self, plan_id: str) -> ProgramPlan | None:
+        row = self._conn.execute(
+            "select payload_json from task_plans where id = ?",
+            (plan_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return program_plan_from_dict(json.loads(row["payload_json"]))
+
     def create_run(self, run: TaskRun) -> TaskRun:
         if self.get_contract(run.contract_id) is None:
             raise ValueError(f"unknown contract id: {run.contract_id}")
+        if run.plan_id is not None:
+            plan = self.get_plan(run.plan_id)
+            if plan is None:
+                raise ValueError(f"unknown plan id: {run.plan_id}")
+            ensure_plan_matches_run_contract(run, plan)
         payload = json.dumps(run_to_dict(run), sort_keys=True)
         try:
             with self._conn:
@@ -104,15 +163,44 @@ class SqliteTaskStore:
             return None
         return run_from_dict(json.loads(row["payload_json"]))
 
+    def list_runs(
+        self,
+        *,
+        statuses: tuple[TaskRunStatus, ...] | None = None,
+        limit: int = 100,
+    ) -> tuple[TaskRun, ...]:
+        if limit <= 0:
+            raise ValueError("limit must be > 0")
+        rows = self._conn.execute(
+            "select payload_json from task_runs order by rowid asc"
+        ).fetchall()
+        allowed = set(statuses) if statuses is not None else None
+        runs = (
+            run_from_dict(json.loads(row["payload_json"]))
+            for row in rows
+        )
+        return tuple(
+            run
+            for run in runs
+            if allowed is None or run.status in allowed
+        )[:limit]
+
     def update_run(self, run: TaskRun) -> TaskRun:
         current = self.get_run(run.id)
         if current is None:
             raise ValueError(f"unknown run id: {run.id}")
+        ensure_immutable_run_binding(current, run)
         if self.get_contract(run.contract_id) is None:
             raise ValueError(f"unknown contract id: {run.contract_id}")
+        if run.plan_id is not None:
+            plan = self.get_plan(run.plan_id)
+            if plan is None:
+                raise ValueError(f"unknown plan id: {run.plan_id}")
+            ensure_plan_matches_run_contract(run, plan)
         normalized = TaskRun(
             id=run.id,
             contract_id=run.contract_id,
+            plan_id=run.plan_id,
             status=run.status,
             current_checkpoint_id=run.current_checkpoint_id,
             event_seq=max(run.event_seq, current.event_seq),
@@ -137,6 +225,151 @@ class SqliteTaskStore:
                 ),
             )
         return run_from_dict(json.loads(payload))
+
+    def compare_and_set_run_status(
+        self,
+        run_id: str,
+        *,
+        expected_statuses: tuple[TaskRunStatus, ...],
+        status: TaskRunStatus,
+        checkpoint_id: str | None = None,
+    ) -> TaskRun | None:
+        if not expected_statuses:
+            raise ValueError("expected_statuses must not be empty")
+        self._conn.execute("begin immediate")
+        try:
+            current = self.get_run(run_id)
+            if current is None:
+                raise ValueError(f"unknown run id: {run_id}")
+            if current.status not in set(expected_statuses):
+                self._conn.commit()
+                return None
+            updated = current.with_status(status, checkpoint_id=checkpoint_id)
+            self._write_run_projection(updated)
+            self._conn.commit()
+            return updated
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def get_run_lease(self, run_id: str) -> RunLease | None:
+        self._require_run(run_id)
+        return self._get_run_lease_unchecked(run_id)
+
+    def claim_run(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+        lease_seconds: int,
+        retry_budget: int,
+        now: datetime | None = None,
+    ) -> RunLease | None:
+        self._conn.execute("begin immediate")
+        try:
+            run = self.get_run(run_id)
+            if run is None:
+                raise ValueError(f"unknown run id: {run_id}")
+            if run.status not in {
+                TaskRunStatus.CREATED,
+                TaskRunStatus.RUNNING,
+                TaskRunStatus.RECOVERING,
+            }:
+                self._conn.commit()
+                return None
+            current = self._get_run_lease_unchecked(run_id) or RunLease(
+                run_id=run_id,
+                retry_budget=retry_budget,
+            )
+            if not current.claimable_at(now):
+                self._conn.commit()
+                return None
+            if current.attempt_count >= current.retry_budget:
+                self._write_run_lease(
+                    current.dead_letter("retry budget exhausted")
+                )
+                self._conn.commit()
+                return None
+            claimed = current.claim(
+                owner_id=owner_id,
+                lease_seconds=lease_seconds,
+                now=now,
+            )
+            self._write_run_lease(claimed)
+            self._conn.commit()
+            return claimed
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def heartbeat_run_lease(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+        lease_token: str,
+        lease_seconds: int,
+        now: datetime | None = None,
+    ) -> RunLease:
+        self._conn.execute("begin immediate")
+        try:
+            run = self.get_run(run_id)
+            if run is None:
+                raise ValueError(f"unknown run id: {run_id}")
+            if run.status not in {
+                TaskRunStatus.CREATED,
+                TaskRunStatus.RUNNING,
+                TaskRunStatus.RECOVERING,
+            }:
+                raise ValueError(f"run is not executable: {run.status.value}")
+            current = self._get_run_lease_unchecked(run_id)
+            if current is None:
+                raise ValueError(f"run has no lease: {run_id}")
+            updated = current.heartbeat(
+                owner_id=owner_id,
+                lease_token=lease_token,
+                lease_seconds=lease_seconds,
+                now=now,
+            )
+            self._write_run_lease(updated)
+            self._conn.commit()
+            return updated
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def release_run_lease(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+        lease_token: str,
+        state: RunLeaseState,
+        reason: str,
+        next_attempt_at: datetime | None = None,
+        last_error: str | None = None,
+    ) -> RunLease:
+        self._conn.execute("begin immediate")
+        try:
+            if self.get_run(run_id) is None:
+                raise ValueError(f"unknown run id: {run_id}")
+            current = self._get_run_lease_unchecked(run_id)
+            if current is None:
+                raise ValueError(f"run has no lease: {run_id}")
+            updated = current.release(
+                owner_id=owner_id,
+                lease_token=lease_token,
+                state=state,
+                reason=reason,
+                next_attempt_at=next_attempt_at,
+                last_error=last_error,
+            )
+            self._write_run_lease(updated)
+            self._conn.commit()
+            return updated
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def append_event(
         self,
@@ -294,6 +527,13 @@ class SqliteTaskStore:
                     id text primary key,
                     payload_json text not null
                 );
+                create table if not exists task_plans (
+                    id text primary key,
+                    contract_id text not null,
+                    payload_json text not null
+                );
+                create index if not exists task_plans_contract_id_idx
+                    on task_plans(contract_id);
                 create table if not exists task_runs (
                     id text primary key,
                     contract_id text not null,
@@ -302,6 +542,14 @@ class SqliteTaskStore:
                     event_seq integer not null default 0,
                     payload_json text not null
                 );
+                create table if not exists task_run_leases (
+                    run_id text primary key,
+                    state text not null,
+                    version integer not null,
+                    payload_json text not null
+                );
+                create index if not exists task_run_leases_state_idx
+                    on task_run_leases(state);
                 create table if not exists task_events (
                     id text primary key,
                     run_id text not null,
@@ -322,6 +570,29 @@ class SqliteTaskStore:
                 );
                 """
             )
+
+    def _get_run_lease_unchecked(self, run_id: str) -> RunLease | None:
+        row = self._conn.execute(
+            "select payload_json from task_run_leases where run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return run_lease_from_dict(json.loads(row["payload_json"]))
+
+    def _write_run_lease(self, lease: RunLease) -> None:
+        payload = json.dumps(run_lease_to_dict(lease), sort_keys=True)
+        self._conn.execute(
+            """
+            insert into task_run_leases (run_id, state, version, payload_json)
+            values (?, ?, ?, ?)
+            on conflict(run_id) do update set
+                state = excluded.state,
+                version = excluded.version,
+                payload_json = excluded.payload_json
+            """,
+            (lease.run_id, lease.state.value, lease.version, payload),
+        )
 
     def _write_run_projection(self, run: TaskRun) -> None:
         payload = json.dumps(run_to_dict(run), sort_keys=True)

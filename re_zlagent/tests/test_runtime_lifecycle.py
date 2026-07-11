@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from re_zlagent.harness.runtime import (  # noqa: E402
     HarnessRuntime,
-    RuntimeAcceptanceInput,
+    RuntimeAcceptanceFacts,
     RuntimeToolStep,
 )
 from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
@@ -319,7 +319,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(resumed.accepted)
         self.assertEqual(resumed.run.status, TaskRunStatus.COMPLETED)
         self.assertEqual(store.latest_checkpoint("run-1").status.value, "completed")
-        self.assertEqual(resumed.step_verifications[-1].step_id, "alt-step")
+        self.assertEqual(resumed.step_verifications[-1].step_id, "step-1")
         self.assertEqual(resumed.step_verifications[-1].status, StepStatus.PASSED)
         tool_events = [
             event
@@ -373,7 +373,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.run.status, TaskRunStatus.RECOVERING)
-        self.assertEqual(result.failure.failed_step, "alt-step")
+        self.assertEqual(result.failure.failed_step, "step-1")
         self.assertEqual(
             latest.state["alternative_of_checkpoint_id"],
             source_checkpoint.id,
@@ -601,7 +601,7 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             ),
             run_id="run-1",
             steps=[],
-            acceptance=RuntimeAcceptanceInput(
+            acceptance_facts=RuntimeAcceptanceFacts(
                 evidence_refs=("manual:evidence",),
                 passed_tests=("unit-tests",),
             ),

@@ -100,6 +100,10 @@ class TaskContract:
         object.__setattr__(self, "freshness_policy", dict(self.freshness_policy))
         if not self.acceptance_criteria:
             raise ValueError("contract.acceptance_criteria must not be empty")
+        if not any(criterion.required for criterion in self.acceptance_criteria):
+            raise ValueError(
+                "contract.acceptance_criteria must include at least one required criterion"
+            )
         seen: set[str] = set()
         for criterion in self.acceptance_criteria:
             if criterion.id in seen:
@@ -116,6 +120,7 @@ class TaskRun:
 
     id: str
     contract_id: str
+    plan_id: str | None = None
     status: TaskRunStatus = TaskRunStatus.CREATED
     current_checkpoint_id: str | None = None
     event_seq: int = 0
@@ -126,6 +131,8 @@ class TaskRun:
     def __post_init__(self) -> None:
         _require_text(self.id, "run.id")
         _require_text(self.contract_id, "run.contract_id")
+        if self.plan_id is not None:
+            _require_text(self.plan_id, "run.plan_id")
         if self.event_seq < 0:
             raise ValueError("run.event_seq must be >= 0")
         object.__setattr__(self, "metadata", dict(self.metadata))
@@ -140,6 +147,7 @@ class TaskRun:
         return TaskRun(
             id=self.id,
             contract_id=self.contract_id,
+            plan_id=self.plan_id,
             status=status,
             current_checkpoint_id=checkpoint_id
             if checkpoint_id is not None

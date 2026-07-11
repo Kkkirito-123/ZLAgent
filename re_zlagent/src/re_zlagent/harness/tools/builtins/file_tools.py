@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ...sandbox import PathViolationType, WorkspacePathError, WorkspacePathPolicy
-from ..base import Tool, ToolPermission, ToolResult
+from ..base import Tool, ToolExecutionContext, ToolPermission, ToolResult
 from ..metadata import Evidence, RecommendedNextAction, SideEffect, ToolErrorType
 from ..read_before_write import ReadBeforeWritePolicy
 
@@ -195,6 +195,8 @@ class WriteFileTool(Tool):
     is_concurrency_safe = False
     is_destructive = True
     side_effects = ("filesystem",)
+    outbox_required = True
+    side_effect_retry_safe = True
     max_result_chars = 2_000
     input_schema = {
         "type": "object",
@@ -231,6 +233,62 @@ class WriteFileTool(Tool):
 
     def requires_read_before_write(self, arguments: dict[str, Any] | None) -> bool:
         return True
+
+    def plan_side_effects(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[SideEffect, ...]:
+        try:
+            resolved = self._path_policy.resolve(arguments.get("path"))
+        except WorkspacePathError as exc:
+            raise ValueError(exc.message) from exc
+        content = arguments.get("content")
+        if not isinstance(content, str):
+            raise ValueError("content must be a string")
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_BYTES:
+            raise ValueError(
+                f"content is {len(encoded)} bytes, exceeds 256 KiB cap"
+            )
+        target = resolved.absolute_path
+        if target.exists() and target.is_dir():
+            raise ValueError(
+                f"refusing to overwrite directory: {resolved.relative_path}"
+            )
+        return (
+            self._write_side_effect(
+                relative_path=resolved.relative_path,
+                absolute_path=target,
+                encoded=encoded,
+                creating_new_target=not target.exists(),
+            ),
+        )
+
+    async def execute_with_context(
+        self,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        """Treat an already-applied identical write as an idempotent replay."""
+
+        try:
+            resolved = self._path_policy.resolve(arguments.get("path"))
+            content = arguments.get("content")
+            if not isinstance(content, str):
+                return await self.execute(arguments)
+            encoded = content.encode("utf-8")
+            target = resolved.absolute_path
+            if target.is_file() and target.read_bytes() == encoded:
+                return self._write_success_result(
+                    relative_path=resolved.relative_path,
+                    absolute_path=target,
+                    encoded=encoded,
+                    creating_new_target=False,
+                    idempotent_replay=True,
+                )
+        except (OSError, WorkspacePathError):
+            pass
+        return await self.execute(arguments)
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         try:
@@ -328,41 +386,74 @@ class WriteFileTool(Tool):
                 source=self.name,
             )
 
+        return self._write_success_result(
+            relative_path=rel,
+            absolute_path=target,
+            encoded=encoded,
+            creating_new_target=creating_new_target,
+        )
+
+    def _write_success_result(
+        self,
+        *,
+        relative_path: str,
+        absolute_path: Path,
+        encoded: bytes,
+        creating_new_target: bool,
+        idempotent_replay: bool = False,
+    ) -> ToolResult:
         new_hash = _sha256_hex(encoded)
         return ToolResult.success(
-            f"Wrote {len(encoded)} bytes to {rel}",
+            f"Wrote {len(encoded)} bytes to {relative_path}",
             raw={
-                "path": rel,
+                "path": relative_path,
                 "bytes": len(encoded),
                 "sha256": new_hash,
                 "created": creating_new_target,
+                "idempotent_replay": idempotent_replay,
             },
             evidence=[
                 Evidence(
                     type="file",
-                    ref=rel,
+                    ref=relative_path,
                     summary="workspace file written",
                     metadata={
-                        "absolute_path": str(target),
+                        "absolute_path": str(absolute_path),
                         "bytes": len(encoded),
                         "sha256": new_hash,
                         "created": creating_new_target,
+                        "idempotent_replay": idempotent_replay,
                     },
                 )
             ],
             side_effects=[
-                SideEffect(
-                    type="filesystem",
-                    target=rel,
-                    risk="medium" if not creating_new_target else "low",
-                    metadata={
-                        "absolute_path": str(target),
-                        "bytes": len(encoded),
-                        "sha256": new_hash,
-                    },
+                self._write_side_effect(
+                    relative_path=relative_path,
+                    absolute_path=absolute_path,
+                    encoded=encoded,
+                    creating_new_target=creating_new_target,
                 )
             ],
             source=self.name,
+        )
+
+    @staticmethod
+    def _write_side_effect(
+        *,
+        relative_path: str,
+        absolute_path: Path,
+        encoded: bytes,
+        creating_new_target: bool,
+    ) -> SideEffect:
+        return SideEffect(
+            type="filesystem",
+            target=relative_path,
+            risk="medium" if not creating_new_target else "low",
+            metadata={
+                "absolute_path": str(absolute_path),
+                "bytes": len(encoded),
+                "sha256": _sha256_hex(encoded),
+            },
         )
 
 

@@ -1,5 +1,6 @@
 """Model client boundaries."""
 
+from .config import OpenAICompatibleModelConfig
 from .openai_compatible import (
     ChatCompletionTransport,
     ModelClientError,
@@ -15,5 +16,6 @@ __all__ = [
     "ModelMessage",
     "ModelResponse",
     "OpenAICompatibleModelClient",
+    "OpenAICompatibleModelConfig",
     "UrllibChatCompletionTransport",
 ]

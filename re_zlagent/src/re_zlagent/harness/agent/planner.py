@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from re_zlagent.harness.runtime import RuntimeAcceptanceInput, RuntimeToolStep
+from re_zlagent.harness.runtime import RuntimeToolStep
 from re_zlagent.harness.tasking import PlanDAG, TaskContract
 
 
@@ -34,7 +34,6 @@ class AgentPlan:
 
     contract: TaskContract
     steps: tuple[RuntimeToolStep, ...] = field(default_factory=tuple)
-    acceptance: RuntimeAcceptanceInput = field(default_factory=RuntimeAcceptanceInput)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

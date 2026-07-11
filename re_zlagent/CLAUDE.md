@@ -16,6 +16,7 @@ This workspace follows OpenGUI's repository-rule style:
 ```text
 AGENTS.md       thin entry pointer
 CLAUDE.md       single source of truth for agents
+ROADMAP.md      delivery stages, status, and migration gates
 README.md       human-facing project state and usage
 CONTRIBUTING.md concise development workflow
 src/            implementation
@@ -28,6 +29,11 @@ Do not reintroduce long-lived `docs/`, `plans/`, or `reports/` folders unless th
 
 - Reply to the user in Chinese.
 - Read `AGENTS.md`, then this file before working in `re_zlagent`.
+- Read `ROADMAP.md` before staged delivery, migration, or capability work.
+- Use English authority files for AI decisions. Files ending in `.zh-CN.md` are
+  human-facing translations; do not read them as operational context or authority.
+- When an English authority document changes, synchronize its Chinese translation
+  for the user in the same documentation change.
 - Treat everything outside `re_zlagent/` as reference-only by default.
 - Keep each change focused on one explicit objective.
 - Before new features, refactors, deletions, dependency changes, database changes, or batch edits, write a Chinese plan and wait for user confirmation.
@@ -131,11 +137,14 @@ src/re_zlagent/app/
   DispatchResult
   ApplicationBootstrapConfig
   ApplicationContainer
+  ApplicationRuntimeContainer
+  LocalTaskAdapter
   OperatorService
   OperatorResponse
   ApprovalService
   ApprovalResponse
   build_application_container
+  build_application_runtime
   run_cli
 
 src/re_zlagent/harness/
@@ -175,12 +184,25 @@ src/re_zlagent/harness/tasking/
   StepStatus
   StepVerification
   StepVerifier
+  DagExecutionAssessment
+  DagExecutionPolicy
+  ProgramPlan
+  ProgramPhase
+  LongTaskProjector
+  LongTaskProjection
+  PendingInteraction
+  ArtifactRecord
+  SideEffectRecord
 
 src/re_zlagent/harness/storage/
   TaskStore
   InMemoryTaskStore
+  LongTaskStore
+  InMemoryLongTaskStore
   SqliteTaskStore
+  SqliteLongTaskStore
   PostgresTaskStore
+  PostgresLongTaskStore
   storage serde helpers
 
 src/re_zlagent/harness/runtime/
@@ -188,9 +210,17 @@ src/re_zlagent/harness/runtime/
   RunControlResult
   RunControlService
   RuntimeToolStep
-  RuntimeAcceptanceInput
+  RuntimeAcceptanceFacts
   RuntimeResult
+  RuntimeSubmission
+  ContextPack
+  ContextPackBuilder
+  ParkedRunCandidate
+  ParkedRunKind
+  ParkedRunScanner
+  DurableWorker
   HarnessRuntime
+  HarnessRuntime.submit
   HarnessRuntime.resume_from_checkpoint
   HarnessRuntime.resume_with_alternative_tool
   HarnessRuntime.resume_with_user_approval
@@ -202,12 +232,14 @@ src/re_zlagent/harness/agent/
   StaticAgentPlanner
   JsonPlanPlanner
   AgentOrchestrator
+  AgentOrchestrator.submit
 
 src/re_zlagent/harness/model/
   ModelMessage
   ModelResponse
   ModelClient
   OpenAICompatibleModelClient
+  OpenAICompatibleModelConfig
 
 src/re_zlagent/harness/memory/
   MemoryEntry
@@ -240,10 +272,15 @@ src/re_zlagent/harness/evals/
   EvalSuiteResult
   AgentEvalRunner
   RunHealthMonitor
+  BenchmarkCorpus
+  ReleaseBenchmarkRunner
+  ReleaseBenchmarkReport
 
 src/re_zlagent/harness/progress/
   TaskProgressReader
   TaskProgressSnapshot
+  LongTaskProgressReader
+  LongTaskProgressSnapshot
 ```
 
 Important semantics:
@@ -258,16 +295,50 @@ Important semantics:
 - `ResumePolicy` only allows automatic resume for explicitly recoverable retry checkpoints.
 - `PlanStep` and `StepVerifier` define linear stage completion; they do not decide task completion.
 - `PlanDAG` validates dependency shape and linear execution order only; it must not schedule parallel execution.
+- `ProgramPlan` groups DAG steps into long-task phases; it must not execute tools or schedule parallel work.
+- `ProgramPlan` revisions are persisted before execution and are immutable by id.
+- A run's contract and plan bindings are immutable; storage adapters must reject cross-contract plans and rebinding.
+- `LongTaskProjector` derives step, phase, frontier, and blocked state from append-only events, checkpoints, and pending interactions.
+- `PendingInteraction` is the durable wait point for user/operator input and must be anchored to a checkpoint plus resume token.
+- `ContextPackBuilder` rebuilds resume context from `TaskStore`, artifacts, and pending interactions; chat history is not authoritative state.
+- `LongTaskStore` persists pending interactions, artifact records, and side-effect records; it must not replace task contracts, events, runs, or checkpoints.
+- `InMemoryLongTaskStore` is the adapter behavior baseline; `SqliteLongTaskStore` is the local durable SQL baseline for long-task ledger records.
+- Side-effect tools must declare deterministic intents before dispatch, set `outbox_required`, and execute through `SideEffectOutbox`.
+- Logical side-effect keys bind run id, immutable plan revision, and original step id; retry and recovery must reuse the same key downstream.
+- `MessageSender` adapters must accept and deduplicate a stable idempotency key.
+- Outbox transitions use compare-and-set across `planned`, `dispatching`, `applied`, `confirmed`, `failed`, `reverted`, and `uncertain`.
+- A tool result event must be durable before `applied` becomes `confirmed`.
+- `uncertain` outcomes require explicit reconciliation; confirmation must include a replayable trusted `ToolResult`.
+- Undeclared side effects are quarantined as `uncertain` and cannot pass acceptance.
+- `ParkedRunScanner` classifies paused, waiting-user, recoverable, terminal, and missing runs; it must not execute tools or mutate state.
+- `RunLease` owns worker identity, token, heartbeat, expiry, attempt count, retry budget, backoff, and dead-letter state; these fields do not belong in `TaskRun.status`.
+- TaskStore claim, heartbeat, release, and run-status transitions must be atomic compare-and-set operations in durable adapters.
+- `DurableWorker` may schedule and heartbeat work, but must route created/running recovery and checkpoint retry through `HarnessRuntime`.
+- `HarnessRuntime.submit` persists the immutable contract, plan, request context, and created run without executing tools.
+- An active lease blocks competing workers; an expired lease may be reclaimed; waiting-user, paused, cancelled, and terminal runs cannot be claimed.
+- Retry budget exhaustion produces durable dead-letter/manual-review state rather than an unbounded loop.
+- `DagExecutionPolicy` gives conservative scheduling guidance for DAG frontier steps; it must not schedule or execute DAG steps.
+- `LongTaskProgressReader` combines progress, long-task projection, parked state, and DAG execution assessment as read-only data.
+- Long-task recovery context should preserve contract, DAG frontier, latest checkpoint, open interactions, artifact refs, evidence refs, recent events, and acceptance gaps.
+- Retry, alternative-tool, and approval recovery must re-enter one continuation path driven by a persisted `ContextPack` and execute every remaining verified frontier step.
+- Alternative tools execute as the original persisted step identity and cannot weaken its dependencies or verification requirements.
+- Durable workers and product adapters must route execution through `HarnessRuntime`; automatic replan and parallel DAG execution remain separate later stages.
 - Runtime emits `plan_step_started` and `plan_step_verified` events around tool execution.
 - Stage verification failure stops the run before final acceptance and records `step_verification_failed`.
 - Failure envelopes classify perturbations with `visibility`, `duration`, and `perturbation_class`.
 - `resume_with_user_approval` resumes ask-user checkpoints, but approved tool success still requires step verification and final acceptance.
 - `resume_with_alternative_tool` resumes only alternative-tool checkpoints and requires an explicit replacement `RuntimeToolStep`.
 - `AcceptanceGate` can only pass from explicit evidence, tests, approvals, and freshness timestamps.
+- `AgentPlan` contains requirements and runtime steps, never trusted acceptance facts.
+- `RuntimeAcceptanceFacts` may only be constructed by trusted host/runtime or verifier boundaries; planner and model output cannot supply it.
+- Trusted runtime acceptance facts are persisted as append-only events so restart does not change acceptance truth.
+- Every task contract must contain at least one required acceptance criterion.
+- `TaskStore.save_contract` is immutable by contract id: exact replay is idempotent and different content must use a new id.
 - `TaskStore` is the persistence boundary for task contracts, run projections, append-only events, and checkpoints.
 - `InMemoryTaskStore` is the adapter behavior baseline used by tests.
 - `SqliteTaskStore` is the local durable SQL behavior baseline.
 - `PostgresTaskStore` preserves the same append-only semantics for production SQL.
+- `PostgresLongTaskStore` preserves pending interaction, artifact, and outbox ledger semantics for production SQL.
 - `HarnessRuntime` is the single lifecycle skeleton for deterministic runs before adding LLM planning.
 - Runtime execution must flow through `TaskStore`, `ToolRegistry`, checkpoints, and `AcceptanceGate`.
 - Operator controls such as pause, resume with feedback, cancel, and fork must go through `RunControlService`.
@@ -282,13 +353,19 @@ Important semantics:
 - Resumed runs must pass `AcceptanceGate`; a successful retry is not completion by itself.
 - `AgentPlanner` produces contracts and runtime steps; it must not execute tools directly.
 - `JsonPlanPlanner` accepts strict JSON plans and validates them into `AgentPlan`.
+- Model planning is restricted to host-provided tool schemas; unavailable tools and model-granted confirm authority are rejected.
+- Model-proposed contract identity and goal are rebound to the trusted host request before persistence.
 - `OpenAICompatibleModelClient` is a thin provider adapter with injectable transport and no hard third-party dependency.
+- `OpenAICompatibleModelConfig` stores only non-secret settings and resolves the API key from an explicitly named environment variable.
 - Model-supplied freshness timestamps are rejected; freshness must come from trusted runtime tools.
 - `AgentOrchestrator` is a thin bridge from planner output into `HarnessRuntime`.
 - `GatewayAdapter` only sends normalized outbound messages.
 - `AgentApplication` maps gateway messages into agent requests and formats results; it does not execute tools or decide acceptance.
 - `ApplicationDispatcher` sends app output through a `GatewayAdapter`; delivery failures are returned as data.
 - `build_application_container` assembles store, tools, runtime, planner, orchestrator, app, operator, approvals, progress reader, and facade.
+- `build_application_runtime` assembles worker/operator services without requiring a planner or model after a plan has been persisted.
+- `LocalTaskAdapter` exposes JSON-compatible submit, status, work, approval, and persisted result reads without creating a second execution path.
+- A local result is verified only when persisted acceptance is true and the run projection is completed.
 - `run_cli` is an app/operator surface. It must output JSON through `OperatorService`.
 - App bootstrap requires an explicit planner or model; it must not silently pretend an LLM exists.
 - `ApplicationContainer.close()` closes owned adapters that expose a `close` method.
@@ -304,6 +381,9 @@ Important semantics:
 - `AgentEvalRunner` runs benchmark scenarios against `AgentOrchestrator` output; it reports differences but never mutates task state.
 - `RunHealthMonitor` builds read-only health snapshots from runtime results.
 - Benchmarks and realtime health checks must not replace `AcceptanceGate`.
+- The release corpus is versioned package data; benchmark implementations execute real runtime/storage boundaries but remain read-only observers of completion truth.
+- Release gates fail on any case regression, false completion, duplicate logical side effect, abandoned run, or latency budget violation.
+- `re_zlagent.check` is the single local/CI quality command and includes tests, release benchmarks, compile, lint, type checks, smoke checks, and package validation.
 - `TaskProgressReader` builds polling snapshots from `TaskStore`; it is read-only and must not emit or mutate events.
 - `HarnessFacade` is the app/gateway-facing read-only entry for capability inventory and runtime snapshots.
 - App/gateway code should not reach directly into registries/loaders when a facade method covers the need.
@@ -316,6 +396,9 @@ task_contracts       stable goal and acceptance contract
 task_events          append-only lifecycle and tool/eval evidence
 task_checkpoints     recoverable snapshots
 task_runs            current projection only
+pending_interactions durable user/operator wait points with resume tokens
+task_artifacts       artifact refs and evidence lineage
+side_effect_ledger   idempotency records for externally visible actions
 ```
 
 If `task_runs` conflicts with events/checkpoints, recovery should trust events/checkpoints.
@@ -339,66 +422,24 @@ PostgresTaskStore
 
 PostgreSQL real-environment validation still requires an application-level DSN and a live database.
 
-## 5. Migration Closure Plan
+## 5. Delivery Roadmap Authority
 
-Migration closure is a staged process. Do not treat the old `backend/` as a file-copy target. Read old code to identify behavior, then preserve, replace, defer, or remove it deliberately.
+`ROADMAP.md` owns delivery stages, current status, capability decisions, entry
+gates, exit gates, and the final legacy-deletion gate. Do not duplicate those
+details in this file.
 
-Current closure status:
+Migration rules that remain architectural authority here:
 
-```text
-re_zlagent harness foundation          implemented and tested
-linear stage-completion model          implemented and tested
-DAG expression model                   implemented and tested
-failure perturbation classification    implemented and tested
-user approval resume path              implemented and tested
-app operator control surface           implemented and tested
-app approval recovery surface          implemented and tested
-explicit alternative-tool recovery     implemented and tested
-old backend full capability parity     not complete
-old backend deletion                   not allowed yet
-OpenGUI-specific migration             deferred
-```
-
-Capability ledger:
-
-| Old capability | Current `re_zlagent` status | Decision |
-| --- | --- | --- |
-| agent loop / tool loop | partially replaced | Keep the new `AgentPlanner -> HarnessRuntime -> AcceptanceGate` path instead of copying the old loop. |
-| tool registry / permission | replaced | Use the new structured `ToolResult` and permission metadata. |
-| checkpoints / recovery | replaced | Keep the new checkpoint and resume semantics. |
-| task store / sqlite / postgres | replaced | Use `TaskStore` semantics as the source of truth. |
-| app / gateway message boundary | foundation implemented | Use `AgentApplication` and `OperatorService` as app boundaries; add concrete IM/API adapters later. |
-| memory | partially replaced | Keep minimal versioned memory now; old curator/review flows are deferred. |
-| skills | partially replaced | Keep read-only loader and guard now; old `skill_manage` flows are deferred. |
-| MCP | not migrated | Migrate as a separate approved stage. |
-| cron / scheduled jobs | not migrated | Defer until the core harness is stable. |
-| OpenGUI tool | not migrated | Defer while `re_zlagent` remains harness-first. |
-| wiki / graph-rag / geo | not migrated | Defer as knowledge-system work. |
-| FastAPI API layer | not migrated | Build after the app/harness boundary is stable. |
-| confirmations | partially replaced | Confirm-tier semantics, user approval resume, and app approval service exist; concrete product confirmation adapters are deferred. |
-
-Execution order:
-
-```text
-M1 migration ledger and scope freeze
-M2 minimal stage-completion model implemented
-M3 minimal replacement for core old-backend gaps implemented
-M4 failure-classification and recovery hardening implemented
-M5 DAG expression after linear stages are stable implemented
-M6 safe concurrency after DAG boundaries are stable paused
-M7 small regression/eval set after the runtime semantics settle
-```
-
-Stage rules:
-
-- M2 implements a linear stage-completion model. Future work must preserve the distinction between step completion and task completion.
-- M3 closes only minimal core old-backend gaps: read-only tool discovery and user approval resume. Product-specific integrations remain deferred.
-- M4 uses ToolMaze-style failure classes after stage completion has explicit evidence.
-- M5 expresses dependencies, but must not enable default parallel execution.
-- Explicit alternative-tool recovery is allowed only when the caller supplies the replacement step.
-- M6 may parallelize only read-only, dependency-free, side-effect-free nodes.
-- M7 measures reliability; it does not replace `AcceptanceGate`.
-- Old source deletion requires an explicit final approval and a capability-ledger check.
+- Do not treat the old `backend/` as a file-copy target. Read old behavior, then
+  preserve, replace, defer, or remove it deliberately.
+- Work in roadmap order and keep one engineering objective per approved change.
+- A roadmap stage advances only from implementation and verification evidence.
+  Model prose, status summaries, and intent are not evidence.
+- Historical stages may be corrected without erasing their history.
+- Wiki, Graph-RAG, and geo are excluded from the current target unless the
+  roadmap is explicitly reopened.
+- Old source deletion is forbidden before the final roadmap gate and explicit
+  user approval.
 
 ## 6. Sensitive Areas
 
@@ -423,7 +464,7 @@ Treat these as high-risk:
 - `src/re_zlagent/harness/progress/`: read-only progress snapshots from task runs, events, and checkpoints.
 - `src/re_zlagent/harness/facade.py`: read-only capability inventory and runtime component status.
 - PostgreSQL adapter: schema, event append semantics, concurrent update policy.
-- future `gateway/` and `app/`: user-facing side effects and IM/API entry behavior.
+- future concrete gateway adapters: user-facing IM/API delivery and authentication behavior.
 
 Protocol changes that cross layers require tests on both sides of the boundary.
 
@@ -432,8 +473,12 @@ Protocol changes that cross layers require tests on both sides of the boundary.
 Default verification for current code:
 
 ```bash
-PYTHONPATH=re_zlagent/src python -m re_zlagent.check --skip-package
-python -m unittest discover -s re_zlagent/tests
+python -m pip install -e 're_zlagent[dev]'
+PYTHONPATH=re_zlagent/src python -m re_zlagent.check
+PYTHONPATH=re_zlagent/src python -m unittest discover -s re_zlagent/tests -t re_zlagent
+PYTHONPATH=re_zlagent/src python -m re_zlagent.benchmark --pretty
+ruff check re_zlagent/src re_zlagent/tests
+mypy re_zlagent/src/re_zlagent
 python -m compileall re_zlagent/src re_zlagent/tests
 PYTHONPATH=re_zlagent/src python -m re_zlagent.app.cli --help
 find re_zlagent -maxdepth 5 -type f | sort
@@ -556,6 +601,8 @@ When touching evals, also verify:
 - scenarios require explicit expectations
 - benchmark results compare against runtime output only
 - suite pass rate and score are deterministic
+- the versioned release corpus covers short plans, long continuation, crash replay, restart approval, and lease reclaim
+- thresholds fail closed for false completion, duplicate side effects, abandoned runs, and latency regressions
 - realtime health snapshots classify completed, waiting_user, recoverable, and failed runs
 - evals and health checks do not mutate runtime state or decide acceptance
 
@@ -591,6 +638,11 @@ When touching app/gateway, also verify:
 - approval service returns serializable runtime recovery responses
 - approval service still goes through step verification and acceptance after user approval
 - app CLI returns JSON for status, accepted control actions, rejected control actions, and argument errors
+- task submission remains `created` until a worker claims it, and no tool runs during submission
+- planner prompts contain request context and registered tool schemas without model secrets
+- planner output cannot select unavailable tools or set `allow_confirm=true`
+- submit, work, approval, and verified result reads survive SQLite process reopen
+- API keys are read from named environment variables and are absent from persisted plan/event metadata
 
 When touching local verification, also verify:
 
@@ -622,6 +674,9 @@ When learning from DeerFlow:
 ## 9. What Future Agents Should Assume
 
 - `CLAUDE.md` is the current rule source.
-- `README.md` is the human-facing project status.
+- `ROADMAP.md` is the stage and migration-status source.
+- `README.md` is the concise human-facing project overview.
+- `*.zh-CN.md` files are non-authoritative user translations. AI agents should
+  not read them for working context or resolve conflicts from them.
 - Old material outside `re_zlagent/` is reference-only.
 - The project is not production-ready until storage, app/gateway, runtime lifecycle, and device/tool integrations are implemented and verified.

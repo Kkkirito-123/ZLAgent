@@ -114,7 +114,7 @@ class OpenAICompatibleModelClient(ModelClient):
     async def complete(self, messages: tuple[ModelMessage, ...]) -> ModelResponse:
         if not messages:
             raise ValueError("messages must not be empty")
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": message.role, "content": message.content}

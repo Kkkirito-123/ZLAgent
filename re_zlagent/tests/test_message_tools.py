@@ -15,13 +15,25 @@ from re_zlagent.harness.tools.builtins import SendMessageTool, ToolOutgoingMessa
 class RecordingGateway:
     def __init__(self) -> None:
         self.sent: list[ToolOutgoingMessage] = []
+        self.idempotency_keys: list[str] = []
 
-    async def send(self, message: ToolOutgoingMessage) -> None:
+    async def send(
+        self,
+        message: ToolOutgoingMessage,
+        *,
+        idempotency_key: str,
+    ) -> None:
         self.sent.append(message)
+        self.idempotency_keys.append(idempotency_key)
 
 
 class FailingGateway:
-    async def send(self, message: ToolOutgoingMessage) -> None:
+    async def send(
+        self,
+        message: ToolOutgoingMessage,
+        *,
+        idempotency_key: str,
+    ) -> None:
         raise RuntimeError("offline")
 
 
@@ -53,9 +65,42 @@ class SendMessageToolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(blocked.status, ToolResultStatus.REQUIRES_CONFIRMATION)
         self.assertEqual(len(gateway.sent), 1)
+        self.assertEqual(len(gateway.idempotency_keys), 1)
+        self.assertTrue(gateway.idempotency_keys[0].startswith("direct:send_message:"))
         self.assertTrue(allowed.ok)
         self.assertEqual(allowed.side_effects[0].type, "message")
         self.assertEqual(allowed.evidence[0].ref, "test:u1")
+
+    async def test_prepared_call_passes_the_stable_side_effect_key(self) -> None:
+        gateway = RecordingGateway()
+        registry = ToolRegistry()
+        registry.register(SendMessageTool(gateway))
+        arguments = {
+            "platform": "test",
+            "target_type": "user",
+            "target_id": "u1",
+            "text": "hello",
+        }
+
+        prepared = registry.prepare(
+            "send_message",
+            arguments,
+            allow_confirm=True,
+            idempotency_key="run:1:step:send",
+        )
+        result = await registry.execute_prepared(prepared)
+
+        self.assertTrue(prepared.ready)
+        self.assertTrue(prepared.outbox_required)
+        self.assertEqual(
+            prepared.context.side_effect_keys,
+            ("run:1:step:send:side_effect:0",),
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            gateway.idempotency_keys,
+            ["run:1:step:send:side_effect:0"],
+        )
 
     async def test_invalid_input_is_recoverable(self) -> None:
         tool = SendMessageTool(RecordingGateway())

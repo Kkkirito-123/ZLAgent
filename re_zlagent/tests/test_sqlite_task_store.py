@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -16,6 +17,9 @@ from re_zlagent.harness.tasking import (  # noqa: E402
     CriterionType,
     FailureEnvelope,
     FailureType,
+    PlanDAG,
+    PlanStep,
+    ProgramPlan,
     RecoveryAction,
     TaskContract,
     TaskEventType,
@@ -38,6 +42,81 @@ class SqliteTaskStoreTests(unittest.TestCase):
                 ),
             ),
         )
+
+    def _plan(self, *, title: str = "execute") -> ProgramPlan:
+        return ProgramPlan(
+            id="plan-1",
+            contract_id="contract-1",
+            dag=PlanDAG((PlanStep(id="step-1", title=title),)),
+        )
+
+    def test_contract_save_is_idempotent_but_identity_is_immutable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SqliteTaskStore(Path(tmp) / "tasks.sqlite")
+            contract = self._contract()
+
+            first = store.save_contract(contract)
+            replay = store.save_contract(contract)
+            store.create_run(TaskRun(id="run-1", contract_id=contract.id))
+
+            self.assertEqual(replay, first)
+            with self.assertRaises(ValueError):
+                store.save_contract(replace(contract, user_goal="changed goal"))
+            self.assertEqual(
+                store.get_contract(store.get_run("run-1").contract_id),
+                contract,
+            )
+            store.close()
+
+    def test_plan_survives_reopen_and_identity_is_immutable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "tasks.sqlite"
+            store = SqliteTaskStore(db_path)
+            store.save_contract(self._contract())
+            plan = self._plan()
+            store.save_plan(plan)
+            store.save_plan(plan)
+            store.create_run(
+                TaskRun(id="run-1", contract_id="contract-1", plan_id=plan.id)
+            )
+            store.close()
+
+            reopened = SqliteTaskStore(db_path)
+            self.assertEqual(reopened.get_plan(plan.id), plan)
+            self.assertEqual(reopened.get_run("run-1").plan_id, plan.id)
+            with self.assertRaises(ValueError):
+                reopened.save_plan(self._plan(title="changed"))
+            reopened.close()
+
+    def test_run_plan_contract_binding_is_immutable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SqliteTaskStore(Path(tmp) / "tasks.sqlite")
+            contract = self._contract()
+            other_contract = replace(contract, id="contract-2")
+            store.save_contract(contract)
+            store.save_contract(other_contract)
+            plan = self._plan()
+            other_plan = replace(plan, id="plan-2", contract_id="contract-2")
+            store.save_plan(plan)
+            store.save_plan(other_plan)
+
+            with self.assertRaises(ValueError):
+                store.create_run(
+                    TaskRun(
+                        id="cross-boundary",
+                        contract_id="contract-2",
+                        plan_id=plan.id,
+                    )
+                )
+
+            run = store.create_run(
+                TaskRun(id="run-1", contract_id=contract.id, plan_id=plan.id)
+            )
+            with self.assertRaises(ValueError):
+                store.update_run(replace(run, contract_id="contract-2"))
+            with self.assertRaises(ValueError):
+                store.update_run(replace(run, plan_id=other_plan.id))
+            store.close()
 
     def test_persists_contract_run_event_and_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

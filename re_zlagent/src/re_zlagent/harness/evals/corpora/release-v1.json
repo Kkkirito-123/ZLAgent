@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026.07.1",
+  "thresholds": {
+    "minimum_pass_rate": 1.0,
+    "maximum_false_completions": 0,
+    "maximum_duplicate_side_effects": 0,
+    "maximum_abandoned_runs": 0,
+    "maximum_suite_duration_ms": 15000
+  },
+  "cases": [
+    {
+      "id": "short-verified-success",
+      "name": "Short plan completes only from trusted evidence",
+      "suite": "short_plan",
+      "kind": "verified_success",
+      "max_duration_ms": 2000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": false,
+        "metrics": {
+          "tool_calls": 1,
+          "false_completions": 0
+        }
+      }
+    },
+    {
+      "id": "short-false-completion-guard",
+      "name": "Tool success cannot satisfy missing acceptance evidence",
+      "suite": "short_plan",
+      "kind": "false_completion_guard",
+      "max_duration_ms": 2000,
+      "expected": {
+        "accepted": false,
+        "status": "acceptance_failed",
+        "recovered": false,
+        "metrics": {
+          "tool_calls": 1,
+          "false_completions": 0
+        }
+      }
+    },
+    {
+      "id": "long-retry-continuation",
+      "name": "Transient middle-step retry continues the remaining frontier",
+      "suite": "long_task",
+      "kind": "retry_continuation",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "completed_prefix_replays": 0,
+          "failed_step_attempts": 2,
+          "explicit_transient_failures": 1
+        }
+      }
+    },
+    {
+      "id": "resilience-outbox-crash-replay",
+      "name": "Crash after dispatch reuses one logical side-effect key",
+      "suite": "resilience",
+      "kind": "outbox_crash_replay",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "dispatch_attempts": 2,
+          "logical_side_effects": 1,
+          "duplicate_side_effects": 0
+        }
+      }
+    },
+    {
+      "id": "resilience-sqlite-approval-restart",
+      "name": "Approval checkpoint and verified side effect survive SQLite reopen",
+      "suite": "resilience",
+      "kind": "sqlite_approval_restart",
+      "max_duration_ms": 5000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "confirmed_side_effects": 1,
+          "duplicate_side_effects": 0,
+          "open_interactions": 0
+        }
+      }
+    },
+    {
+      "id": "resilience-expired-lease-reclaim",
+      "name": "Expired worker ownership is reclaimed without abandoning the run",
+      "suite": "resilience",
+      "kind": "expired_lease_reclaim",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "reclaimed_expired_leases": 1,
+          "abandoned_runs": 0
+        }
+      }
+    }
+  ]
+}

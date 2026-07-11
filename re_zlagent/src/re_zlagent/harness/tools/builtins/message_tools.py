@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ..base import Tool, ToolPermission, ToolResult
+from ..base import Tool, ToolExecutionContext, ToolPermission, ToolResult
 from ..metadata import Evidence, RecommendedNextAction, SideEffect, ToolErrorType
 
 
@@ -40,10 +42,15 @@ class ToolOutgoingMessage:
 
 
 class MessageSender(Protocol):
-    """Boundary for sending tool-level outbound messages."""
+    """Idempotent boundary for sending tool-level outbound messages."""
 
-    async def send(self, message: ToolOutgoingMessage) -> None:
-        """Send the message."""
+    async def send(
+        self,
+        message: ToolOutgoingMessage,
+        *,
+        idempotency_key: str,
+    ) -> None:
+        """Send once for a stable idempotency key, deduplicating retries."""
 
 
 class SendMessageTool(Tool):
@@ -59,6 +66,8 @@ class SendMessageTool(Tool):
     is_concurrency_safe = False
     is_destructive = False
     side_effects = ("message",)
+    outbox_required = True
+    side_effect_retry_safe = True
     input_schema = {
         "type": "object",
         "properties": {
@@ -74,16 +83,44 @@ class SendMessageTool(Tool):
     def __init__(self, adapter: MessageSender) -> None:
         self._adapter = adapter
 
+    def plan_side_effects(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[SideEffect, ...]:
+        target, _ = self._parse_message(arguments)
+        return (self._side_effect(target),)
+
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        canonical = json.dumps(
+            arguments,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            default=str,
+        ).encode("utf-8")
+        direct_key = f"direct:send_message:{hashlib.sha256(canonical).hexdigest()}"
+        return await self._execute(arguments, idempotency_key=direct_key)
+
+    async def execute_with_context(
+        self,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        idempotency_key = (
+            context.side_effect_keys[0]
+            if context.side_effect_keys
+            else context.idempotency_key
+        )
+        return await self._execute(arguments, idempotency_key=idempotency_key)
+
+    async def _execute(
+        self,
+        arguments: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> ToolResult:
         try:
-            target = MessageTarget(
-                platform=str(arguments.get("platform") or ""),
-                target_type=str(arguments.get("target_type") or ""),
-                target_id=str(arguments.get("target_id") or ""),
-                display_name=str(arguments.get("display_name") or ""),
-            )
-            text = str(arguments.get("text") or "").strip()
-            message = ToolOutgoingMessage(target=target, text=text)
+            target, message = self._parse_message(arguments)
         except ValueError as exc:
             return ToolResult.failure(
                 str(exc),
@@ -94,7 +131,10 @@ class SendMessageTool(Tool):
             )
 
         try:
-            await self._adapter.send(message)
+            await self._adapter.send(
+                message,
+                idempotency_key=idempotency_key,
+            )
         except Exception as exc:  # noqa: BLE001 - gateway failures are data
             return ToolResult.failure(
                 f"{type(exc).__name__}: {exc}",
@@ -110,23 +150,42 @@ class SendMessageTool(Tool):
                 "platform": target.platform,
                 "target_type": target.target_type,
                 "target_id": target.target_id,
-                "bytes": len(text.encode("utf-8")),
+                "bytes": len(message.text.encode("utf-8")),
+                "idempotency_key": idempotency_key,
             },
             evidence=[
                 Evidence(
                     type="message_delivery",
                     ref=f"{target.platform}:{target.target_id}",
                     summary="outbound message accepted by gateway adapter",
-                    metadata={"target_type": target.target_type},
+                    metadata={
+                        "target_type": target.target_type,
+                        "idempotency_key": idempotency_key,
+                    },
                 )
             ],
-            side_effects=[
-                SideEffect(
-                    type="message",
-                    target=f"{target.platform}:{target.target_id}",
-                    risk="medium",
-                    metadata={"target_type": target.target_type},
-                )
-            ],
+            side_effects=[self._side_effect(target)],
             source=self.name,
+        )
+
+    @staticmethod
+    def _parse_message(
+        arguments: dict[str, Any],
+    ) -> tuple[MessageTarget, ToolOutgoingMessage]:
+        target = MessageTarget(
+            platform=str(arguments.get("platform") or ""),
+            target_type=str(arguments.get("target_type") or ""),
+            target_id=str(arguments.get("target_id") or ""),
+            display_name=str(arguments.get("display_name") or ""),
+        )
+        text = str(arguments.get("text") or "").strip()
+        return target, ToolOutgoingMessage(target=target, text=text)
+
+    @staticmethod
+    def _side_effect(target: MessageTarget) -> SideEffect:
+        return SideEffect(
+            type="message",
+            target=f"{target.platform}:{target.target_id}",
+            risk="medium",
+            metadata={"target_type": target.target_type},
         )

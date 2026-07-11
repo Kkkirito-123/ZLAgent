@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from re_zlagent.harness.model import (  # noqa: E402
     ModelClientError,
     ModelMessage,
+    OpenAICompatibleModelConfig,
     OpenAICompatibleModelClient,
 )
 
@@ -29,26 +30,30 @@ class FakeTransport:
         payload: dict[str, Any],
         timeout_seconds: float,
     ) -> dict[str, Any]:
-        self.calls.append({
-            "url": url,
-            "headers": dict(headers),
-            "payload": dict(payload),
-            "timeout_seconds": timeout_seconds,
-        })
+        self.calls.append(
+            {
+                "url": url,
+                "headers": dict(headers),
+                "payload": dict(payload),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
         return self.response
 
 
 class OpenAICompatibleModelClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_complete_posts_chat_completion_payload(self) -> None:
-        transport = FakeTransport({
-            "choices": [
-                {
-                    "message": {"content": "{\"ok\": true}"},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 10},
-        })
+        transport = FakeTransport(
+            {
+                "choices": [
+                    {
+                        "message": {"content": '{"ok": true}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10},
+            }
+        )
         client = OpenAICompatibleModelClient(
             base_url="https://provider.example/v1/",
             model="planner-model",
@@ -58,12 +63,14 @@ class OpenAICompatibleModelClientTests(unittest.IsolatedAsyncioTestCase):
             transport=transport,
         )
 
-        response = await client.complete((
-            ModelMessage(role="system", content="plan"),
-            ModelMessage(role="user", content="goal"),
-        ))
+        response = await client.complete(
+            (
+                ModelMessage(role="system", content="plan"),
+                ModelMessage(role="user", content="goal"),
+            )
+        )
 
-        self.assertEqual(response.content, "{\"ok\": true}")
+        self.assertEqual(response.content, '{"ok": true}')
         call = transport.calls[0]
         self.assertEqual(call["url"], "https://provider.example/v1/chat/completions")
         self.assertEqual(call["headers"]["Authorization"], "Bearer secret")
@@ -75,9 +82,11 @@ class OpenAICompatibleModelClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.raw["usage"], {"prompt_tokens": 10})
 
     async def test_api_key_is_optional_for_local_compatible_servers(self) -> None:
-        transport = FakeTransport({
-            "choices": [{"message": {"content": "ok"}}],
-        })
+        transport = FakeTransport(
+            {
+                "choices": [{"message": {"content": "ok"}}],
+            }
+        )
         client = OpenAICompatibleModelClient(
             base_url="http://localhost:8000/v1",
             model="local",
@@ -89,18 +98,20 @@ class OpenAICompatibleModelClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Authorization", transport.calls[0]["headers"])
 
     async def test_content_parts_are_joined_when_provider_returns_list(self) -> None:
-        transport = FakeTransport({
-            "choices": [
-                {
-                    "message": {
-                        "content": [
-                            {"type": "text", "text": "hello"},
-                            {"type": "text", "text": " world"},
-                        ]
+        transport = FakeTransport(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "hello"},
+                                {"type": "text", "text": " world"},
+                            ]
+                        }
                     }
-                }
-            ],
-        })
+                ],
+            }
+        )
         client = OpenAICompatibleModelClient(
             base_url="https://provider.example/v1",
             model="planner-model",
@@ -126,13 +137,43 @@ class OpenAICompatibleModelClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             OpenAICompatibleModelClient(base_url="", model="model")
         with self.assertRaises(ValueError):
-            OpenAICompatibleModelClient(base_url="https://provider.example/v1", model="")
+            OpenAICompatibleModelClient(
+                base_url="https://provider.example/v1", model=""
+            )
         with self.assertRaises(ValueError):
             OpenAICompatibleModelClient(
                 base_url="https://provider.example/v1",
                 model="model",
                 timeout_seconds=0,
             )
+
+    def test_environment_config_resolves_secret_without_storing_it(self) -> None:
+        config = OpenAICompatibleModelConfig(
+            base_url="https://provider.example/v1",
+            model="planner-model",
+            api_key_env="TEST_PROVIDER_KEY",
+        )
+
+        client = config.build_client(environ={"TEST_PROVIDER_KEY": "secret"})
+
+        self.assertEqual(client.api_key, "secret")
+        self.assertNotIn("secret", repr(config))
+
+    def test_environment_config_requires_named_secret_unless_disabled(self) -> None:
+        protected = OpenAICompatibleModelConfig(
+            base_url="https://provider.example/v1",
+            model="planner-model",
+            api_key_env="MISSING_KEY",
+        )
+        with self.assertRaisesRegex(ValueError, "MISSING_KEY"):
+            protected.build_client(environ={})
+
+        local = OpenAICompatibleModelConfig(
+            base_url="http://localhost:8000/v1",
+            model="local",
+            api_key_env=None,
+        ).build_client(environ={})
+        self.assertEqual(local.api_key, "")
 
 
 if __name__ == "__main__":

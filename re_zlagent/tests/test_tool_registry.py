@@ -9,8 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from re_zlagent.harness.tools import (  # noqa: E402
+    PreparedToolCall,
     SideEffect,
     Tool,
+    ToolExecutionContext,
     ToolErrorType,
     ToolPermission,
     ToolRegistry,
@@ -39,6 +41,20 @@ class ConfirmWriteTool(Tool):
     permission = ToolPermission.CONFIRM
     is_read_only = False
     side_effects = ("filesystem",)
+    outbox_required = True
+    side_effect_retry_safe = True
+
+    def plan_side_effects(
+        self,
+        arguments: dict[str, object],
+    ) -> tuple[SideEffect, ...]:
+        return (
+            SideEffect(
+                type="filesystem",
+                target=str(arguments.get("path", "")),
+                risk="medium",
+            ),
+        )
 
     async def execute(self, arguments: dict[str, object]) -> ToolResult:
         return ToolResult.success(
@@ -162,6 +178,26 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_type, ToolErrorType.TOOL_EXCEPTION)
         self.assertEqual(result.status, ToolResultStatus.ERROR)
         self.assertIn("RuntimeError", result.to_tool_message_content())
+
+    async def test_forged_prepared_call_cannot_bypass_registry_permission(self) -> None:
+        registry = ToolRegistry()
+        tool = EchoTool()
+        registry.register(tool)
+        forged = PreparedToolCall(
+            tool_name=tool.name,
+            arguments={"text": "forged"},
+            context=ToolExecutionContext(idempotency_key="forged"),
+            side_effect_intents=(),
+            outbox_required=False,
+            side_effect_retry_safe=False,
+            _registry_token=object(),
+            tool=tool,
+        )
+
+        result = await registry.execute_prepared(forged)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, ToolResultStatus.DENIED)
 
 
 if __name__ == "__main__":

@@ -88,6 +88,5 @@ class PermissionPolicy:
             return False
         try:
             return bool(tool.is_action_read_only(arguments))
-        except Exception:
+        except Exception:  # noqa: BLE001 - unknown tool logic fails closed
             return False
-

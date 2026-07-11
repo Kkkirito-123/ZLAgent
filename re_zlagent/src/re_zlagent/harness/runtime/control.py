@@ -258,16 +258,18 @@ class RunControlService:
                     actor=actor,
                 )
 
+        fork_reason = reason or "forked by operator"
         fork_metadata = {
             "forked_from_run_id": run.id,
             "forked_from_checkpoint_id": source_checkpoint_id,
-            "fork_reason": reason or "forked by operator",
+            "fork_reason": fork_reason,
             "fork_actor": actor,
         }
         forked_run = self._store.create_run(
             TaskRun(
                 id=new_run_id,
                 contract_id=run.contract_id,
+                plan_id=run.plan_id,
                 model_name=run.model_name,
                 prompt_version=run.prompt_version,
                 metadata=fork_metadata,
@@ -280,7 +282,7 @@ class RunControlService:
                 "contract_id": forked_run.contract_id,
                 "forked_from_run_id": run.id,
                 "forked_from_checkpoint_id": source_checkpoint_id,
-                "reason": fork_metadata["fork_reason"],
+                "reason": fork_reason,
                 "actor": actor,
             },
         )
@@ -290,7 +292,7 @@ class RunControlService:
             payload={
                 "new_run_id": new_run_id,
                 "forked_from_checkpoint_id": source_checkpoint_id,
-                "reason": fork_metadata["fork_reason"],
+                "reason": fork_reason,
                 "actor": actor,
             },
         )
@@ -304,7 +306,7 @@ class RunControlService:
             accepted=True,
             action=RunControlAction.FORK,
             run=source,
-            reason=fork_metadata["fork_reason"],
+            reason=fork_reason,
             event=event,
             forked_run=forked,
             metadata=fork_metadata,
@@ -384,9 +386,34 @@ class RunControlService:
         checkpoint_id: str | None = None,
     ) -> TaskRun:
         current = self._require_run(run_id)
-        self._store.update_run(
-            current.with_status(status, checkpoint_id=checkpoint_id)
+        updated = self._store.compare_and_set_run_status(
+            run_id,
+            expected_statuses=(current.status,),
+            status=status,
+            checkpoint_id=checkpoint_id,
         )
+        if updated is None:
+            latest = self._require_run(run_id)
+            allowed = (
+                self._pause_allowed
+                if status is TaskRunStatus.PAUSED
+                else self._resume_allowed
+                if status is TaskRunStatus.RUNNING
+                else set(TaskRunStatus).difference(self._terminal_statuses)
+            )
+            if latest.status not in allowed:
+                raise RuntimeError(
+                    "run status changed before control action could commit: "
+                    f"{latest.status.value}"
+                )
+            updated = self._store.compare_and_set_run_status(
+                run_id,
+                expected_statuses=(latest.status,),
+                status=status,
+                checkpoint_id=checkpoint_id,
+            )
+            if updated is None:
+                raise RuntimeError("run status changed repeatedly during control action")
         self._append_event(
             run_id=run_id,
             type=TaskEventType.STATUS_CHANGED,

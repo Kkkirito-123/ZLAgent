@@ -1,6 +1,6 @@
 """Tool protocol, registry, permissions, and safety helpers."""
 
-from .base import Tool, ToolPermission, ToolResult
+from .base import Tool, ToolExecutionContext, ToolPermission, ToolResult
 from .metadata import (
     Evidence,
     RecommendedNextAction,
@@ -15,19 +15,20 @@ from .read_before_write import (
     WritePrecondition,
     WritePreconditionStatus,
 )
-from .registry import ToolRegistry
-from .registry import ToolSearchResult
+from .registry import PreparedToolCall, ToolRegistry, ToolSearchResult
 
 __all__ = [
     "Evidence",
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionResult",
+    "PreparedToolCall",
     "ReadBeforeWritePolicy",
     "ReadMark",
     "RecommendedNextAction",
     "SideEffect",
     "Tool",
+    "ToolExecutionContext",
     "ToolErrorType",
     "ToolPermission",
     "ToolRegistry",

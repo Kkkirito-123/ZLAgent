@@ -113,6 +113,14 @@ def build_steps(
             ),
         ),
         CheckStep(
+            name="release-benchmarks",
+            command=(
+                sys.executable,
+                "-m",
+                "re_zlagent.benchmark",
+            ),
+        ),
+        CheckStep(
             name="compileall",
             command=(
                 sys.executable,
@@ -123,11 +131,40 @@ def build_steps(
             ),
         ),
         CheckStep(
+            name="lint",
+            command=(
+                sys.executable,
+                "-m",
+                "ruff",
+                "check",
+                "src",
+                "tests",
+            ),
+        ),
+        CheckStep(
+            name="type-check",
+            command=(
+                sys.executable,
+                "-m",
+                "mypy",
+                "src/re_zlagent",
+            ),
+        ),
+        CheckStep(
             name="cli-help",
             command=(
                 sys.executable,
                 "-m",
                 "re_zlagent.app.cli",
+                "--help",
+            ),
+        ),
+        CheckStep(
+            name="benchmark-help",
+            command=(
+                sys.executable,
+                "-m",
+                "re_zlagent.benchmark",
                 "--help",
             ),
         ),
@@ -187,6 +224,11 @@ def cleanup_generated(project_root: Path) -> tuple[Path, ...]:
             shutil.rmtree(path)
             removed.append(path)
     for path in (root / "src").glob("*.egg-info"):
+        if path.is_dir():
+            shutil.rmtree(path)
+            removed.append(path)
+    for name in (".mypy_cache", ".ruff_cache"):
+        path = root / name
         if path.is_dir():
             shutil.rmtree(path)
             removed.append(path)

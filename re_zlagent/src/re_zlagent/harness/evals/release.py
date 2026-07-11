@@ -1,0 +1,745 @@
+"""Deterministic semantic, recovery, and latency release benchmarks."""
+
+from __future__ import annotations
+
+import tempfile
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from time import perf_counter
+from typing import Any
+
+from re_zlagent.harness.runtime import (
+    DurableWorker,
+    HarnessRuntime,
+    InjectedOutboxCrash,
+    OutboxFaultPoint,
+    RuntimeToolStep,
+    WorkerTickStatus,
+)
+from re_zlagent.harness.storage import (
+    InMemoryLongTaskStore,
+    InMemoryTaskStore,
+    SqliteLongTaskStore,
+    SqliteTaskStore,
+)
+from re_zlagent.harness.tasking import (
+    AcceptanceCriterion,
+    CriterionType,
+    InteractionStatus,
+    RunLeaseState,
+    SideEffectStatus,
+    TaskContract,
+    TaskRunStatus,
+)
+from re_zlagent.harness.tools import (
+    Evidence,
+    RecommendedNextAction,
+    SideEffect,
+    Tool,
+    ToolErrorType,
+    ToolExecutionContext,
+    ToolPermission,
+    ToolRegistry,
+    ToolResult,
+)
+from re_zlagent.harness.tools.builtins import create_file_tools
+
+from .corpus import (
+    BenchmarkCase,
+    BenchmarkCorpus,
+    BenchmarkKind,
+    BenchmarkThresholds,
+    MetricValue,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkObservation:
+    """Runtime facts observed by one release benchmark executor."""
+
+    accepted: bool
+    status: TaskRunStatus
+    recovered: bool
+    metrics: dict[str, MetricValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metrics", dict(self.metrics))
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkCaseResult:
+    """Comparison of one observation with its versioned expectation."""
+
+    case_id: str
+    name: str
+    suite: str
+    kind: str
+    passed: bool
+    duration_ms: float
+    failures: tuple[str, ...] = field(default_factory=tuple)
+    accepted: bool | None = None
+    status: TaskRunStatus | None = None
+    recovered: bool | None = None
+    metrics: dict[str, MetricValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "failures", tuple(self.failures))
+        object.__setattr__(self, "metrics", dict(self.metrics))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "name": self.name,
+            "suite": self.suite,
+            "kind": self.kind,
+            "passed": self.passed,
+            "duration_ms": round(self.duration_ms, 3),
+            "failures": list(self.failures),
+            "accepted": self.accepted,
+            "status": self.status.value if self.status is not None else None,
+            "recovered": self.recovered,
+            "metrics": dict(self.metrics),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseBenchmarkReport:
+    """Machine-readable release gate report for one corpus run."""
+
+    corpus_version: str
+    thresholds: BenchmarkThresholds
+    results: tuple[BenchmarkCaseResult, ...]
+    duration_ms: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "results", tuple(self.results))
+
+    @property
+    def pass_rate(self) -> float:
+        if not self.results:
+            return 0.0
+        return sum(1 for result in self.results if result.passed) / len(self.results)
+
+    @property
+    def false_completions(self) -> int:
+        return self._metric_total("false_completions")
+
+    @property
+    def duplicate_side_effects(self) -> int:
+        return self._metric_total("duplicate_side_effects")
+
+    @property
+    def abandoned_runs(self) -> int:
+        return self._metric_total("abandoned_runs")
+
+    @property
+    def violations(self) -> tuple[str, ...]:
+        failures = [
+            f"case failed: {result.case_id}"
+            for result in self.results
+            if not result.passed
+        ]
+        if self.pass_rate < self.thresholds.minimum_pass_rate:
+            failures.append(
+                "pass rate below threshold: "
+                f"{self.pass_rate:.3f} < {self.thresholds.minimum_pass_rate:.3f}"
+            )
+        if self.false_completions > self.thresholds.maximum_false_completions:
+            failures.append(
+                "false completions exceeded threshold: "
+                f"{self.false_completions} > "
+                f"{self.thresholds.maximum_false_completions}"
+            )
+        if self.duplicate_side_effects > self.thresholds.maximum_duplicate_side_effects:
+            failures.append(
+                "duplicate side effects exceeded threshold: "
+                f"{self.duplicate_side_effects} > "
+                f"{self.thresholds.maximum_duplicate_side_effects}"
+            )
+        if self.abandoned_runs > self.thresholds.maximum_abandoned_runs:
+            failures.append(
+                "abandoned runs exceeded threshold: "
+                f"{self.abandoned_runs} > "
+                f"{self.thresholds.maximum_abandoned_runs}"
+            )
+        if self.duration_ms > self.thresholds.maximum_suite_duration_ms:
+            failures.append(
+                "suite duration exceeded threshold: "
+                f"{self.duration_ms:.3f} > "
+                f"{self.thresholds.maximum_suite_duration_ms:.3f} ms"
+            )
+        return tuple(failures)
+
+    @property
+    def ok(self) -> bool:
+        return not self.violations
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "corpus_version": self.corpus_version,
+            "duration_ms": round(self.duration_ms, 3),
+            "thresholds": self.thresholds.to_dict(),
+            "aggregate": {
+                "total": len(self.results),
+                "passed": sum(1 for result in self.results if result.passed),
+                "failed": sum(1 for result in self.results if not result.passed),
+                "pass_rate": self.pass_rate,
+                "false_completions": self.false_completions,
+                "duplicate_side_effects": self.duplicate_side_effects,
+                "abandoned_runs": self.abandoned_runs,
+            },
+            "violations": list(self.violations),
+            "results": [result.to_dict() for result in self.results],
+        }
+
+    def _metric_total(self, name: str) -> int:
+        total = 0
+        for result in self.results:
+            value = result.metrics.get(name, 0)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            total += int(value)
+        return total
+
+
+BenchmarkExecutor = Callable[[], Awaitable[BenchmarkObservation]]
+
+
+class ReleaseBenchmarkRunner:
+    """Execute a persistent corpus through real harness lifecycle boundaries."""
+
+    def __init__(self, corpus: BenchmarkCorpus) -> None:
+        self._corpus = corpus
+        self._executors: dict[BenchmarkKind, BenchmarkExecutor] = {
+            BenchmarkKind.VERIFIED_SUCCESS: self._verified_success,
+            BenchmarkKind.FALSE_COMPLETION_GUARD: self._false_completion_guard,
+            BenchmarkKind.RETRY_CONTINUATION: self._retry_continuation,
+            BenchmarkKind.OUTBOX_CRASH_REPLAY: self._outbox_crash_replay,
+            BenchmarkKind.SQLITE_APPROVAL_RESTART: self._sqlite_approval_restart,
+            BenchmarkKind.EXPIRED_LEASE_RECLAIM: self._expired_lease_reclaim,
+        }
+
+    async def run(self) -> ReleaseBenchmarkReport:
+        started = perf_counter()
+        results: list[BenchmarkCaseResult] = []
+        for case in self._corpus.cases:
+            results.append(await self._run_case(case))
+        return ReleaseBenchmarkReport(
+            corpus_version=self._corpus.corpus_version,
+            thresholds=self._corpus.thresholds,
+            results=tuple(results),
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+
+    async def _run_case(self, case: BenchmarkCase) -> BenchmarkCaseResult:
+        started = perf_counter()
+        try:
+            observation = await self._executors[case.kind]()
+        except Exception as exc:  # noqa: BLE001 - benchmark failures are report data
+            duration_ms = (perf_counter() - started) * 1000
+            return BenchmarkCaseResult(
+                case_id=case.id,
+                name=case.name,
+                suite=case.suite.value,
+                kind=case.kind.value,
+                passed=False,
+                duration_ms=duration_ms,
+                failures=(f"executor raised {type(exc).__name__}: {exc}",),
+            )
+        duration_ms = (perf_counter() - started) * 1000
+        failures = _compare_observation(case, observation, duration_ms)
+        return BenchmarkCaseResult(
+            case_id=case.id,
+            name=case.name,
+            suite=case.suite.value,
+            kind=case.kind.value,
+            passed=not failures,
+            duration_ms=duration_ms,
+            failures=failures,
+            accepted=observation.accepted,
+            status=observation.status,
+            recovered=observation.recovered,
+            metrics=observation.metrics,
+        )
+
+    async def _verified_success(self) -> BenchmarkObservation:
+        tool = _BenchmarkEvidenceTool()
+        runtime = _runtime_with_tools(tool)
+        result = await runtime.run(
+            contract=_evidence_contract(
+                "benchmark-short-success",
+                "benchmark short success",
+                ("benchmark:short",),
+            ),
+            run_id="benchmark-short-success",
+            steps=(
+                RuntimeToolStep(
+                    id="short",
+                    tool_name=tool.name,
+                    arguments={"ref": "benchmark:short"},
+                    required_evidence_refs=("benchmark:short",),
+                ),
+            ),
+        )
+        return BenchmarkObservation(
+            accepted=result.accepted,
+            status=result.run.status,
+            recovered=False,
+            metrics={
+                "tool_calls": sum(tool.calls.values()),
+                "false_completions": 0,
+            },
+        )
+
+    async def _false_completion_guard(self) -> BenchmarkObservation:
+        tool = _BenchmarkEvidenceTool()
+        runtime = _runtime_with_tools(tool)
+        result = await runtime.run(
+            contract=_evidence_contract(
+                "benchmark-false-completion",
+                "reject unsupported completion",
+                ("benchmark:required",),
+            ),
+            run_id="benchmark-false-completion",
+            steps=(
+                RuntimeToolStep(
+                    id="insufficient",
+                    tool_name=tool.name,
+                    arguments={"ref": "benchmark:other"},
+                ),
+            ),
+        )
+        false_completion = int(
+            result.accepted or result.run.status is TaskRunStatus.COMPLETED
+        )
+        return BenchmarkObservation(
+            accepted=result.accepted,
+            status=result.run.status,
+            recovered=False,
+            metrics={
+                "tool_calls": sum(tool.calls.values()),
+                "false_completions": false_completion,
+            },
+        )
+
+    async def _retry_continuation(self) -> BenchmarkObservation:
+        tool = _BenchmarkEvidenceTool(fail_once={"benchmark:step-2"})
+        runtime = _runtime_with_tools(tool)
+        refs = (
+            "benchmark:step-1",
+            "benchmark:step-2",
+            "benchmark:step-3",
+        )
+        steps = tuple(
+            RuntimeToolStep(
+                id=f"step-{index}",
+                tool_name=tool.name,
+                arguments={"ref": ref},
+                depends_on=(() if index == 1 else (f"step-{index - 1}",)),
+                required_evidence_refs=(ref,),
+            )
+            for index, ref in enumerate(refs, start=1)
+        )
+        first = await runtime.run(
+            contract=_evidence_contract(
+                "benchmark-retry",
+                "retry and continue",
+                refs,
+            ),
+            run_id="benchmark-retry",
+            steps=steps,
+        )
+        resumed = await runtime.resume_from_checkpoint(run_id="benchmark-retry")
+        perturbation = first.failure.perturbation_class if first.failure else ""
+        prefix_replays = max(0, tool.calls.get(refs[0], 0) - 1)
+        prefix_replays += max(0, tool.calls.get(refs[2], 0) - 1)
+        return BenchmarkObservation(
+            accepted=resumed.accepted,
+            status=resumed.run.status,
+            recovered=first.run.status is TaskRunStatus.RECOVERING,
+            metrics={
+                "completed_prefix_replays": prefix_replays,
+                "failed_step_attempts": tool.calls.get(refs[1], 0),
+                "explicit_transient_failures": int(
+                    perturbation == "explicit_transient"
+                ),
+            },
+        )
+
+    async def _outbox_crash_replay(self) -> BenchmarkObservation:
+        adapter = _DeduplicatingExternalAdapter()
+        tool = _BenchmarkExternalTool(adapter)
+        task_store = InMemoryTaskStore()
+        long_task_store = InMemoryLongTaskStore()
+        registry = ToolRegistry()
+        registry.register(tool)
+        runtime = HarnessRuntime(
+            store=task_store,
+            tools=registry,
+            long_task_store=long_task_store,
+            outbox_fault_injector=_CrashAfterDispatch(),
+        )
+        crashed = False
+        try:
+            await runtime.run(
+                contract=_evidence_contract(
+                    "benchmark-outbox",
+                    "recover one external action",
+                    ("benchmark:external",),
+                ),
+                run_id="benchmark-outbox",
+                steps=(
+                    RuntimeToolStep(
+                        id="external",
+                        tool_name=tool.name,
+                        required_evidence_refs=("benchmark:external",),
+                    ),
+                ),
+            )
+        except InjectedOutboxCrash:
+            crashed = True
+        if not crashed:
+            raise RuntimeError("outbox crash injector did not fire")
+        resumed = await HarnessRuntime(
+            store=task_store,
+            tools=registry,
+            long_task_store=long_task_store,
+        ).resume_incomplete_run(run_id="benchmark-outbox")
+        return BenchmarkObservation(
+            accepted=resumed.accepted,
+            status=resumed.run.status,
+            recovered=crashed,
+            metrics={
+                "dispatch_attempts": adapter.dispatch_attempts,
+                "logical_side_effects": adapter.logical_effects,
+                "duplicate_side_effects": max(0, adapter.logical_effects - 1),
+            },
+        )
+
+    async def _sqlite_approval_restart(self) -> BenchmarkObservation:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            database = root / "benchmark.sqlite"
+            contract = _evidence_contract(
+                "benchmark-approval",
+                "approve one durable write",
+                ("result.txt",),
+            )
+
+            task_store = SqliteTaskStore(database)
+            long_task_store = SqliteLongTaskStore(database)
+            runtime = HarnessRuntime(
+                store=task_store,
+                tools=_file_registry(workspace),
+                long_task_store=long_task_store,
+            )
+            runtime.submit(
+                contract=contract,
+                run_id="benchmark-approval",
+                steps=(
+                    RuntimeToolStep(
+                        id="write",
+                        tool_name="write_file",
+                        arguments={"path": "result.txt", "content": "verified\n"},
+                        required_evidence_refs=("result.txt",),
+                    ),
+                ),
+            )
+            task_store.close()
+            long_task_store.close()
+
+            task_store = SqliteTaskStore(database)
+            long_task_store = SqliteLongTaskStore(database)
+            runtime = HarnessRuntime(
+                store=task_store,
+                tools=_file_registry(workspace),
+                long_task_store=long_task_store,
+            )
+            tick = await DurableWorker(
+                worker_id="benchmark-worker",
+                store=task_store,
+                runtime=runtime,
+            ).run_once("benchmark-approval")
+            interactions = long_task_store.list_pending_interactions(
+                "benchmark-approval",
+                status=InteractionStatus.OPEN,
+            )
+            if len(interactions) != 1:
+                raise RuntimeError("approval benchmark did not create one interaction")
+            checkpoint_id = interactions[0].checkpoint_id
+            task_store.close()
+            long_task_store.close()
+
+            task_store = SqliteTaskStore(database)
+            long_task_store = SqliteLongTaskStore(database)
+            runtime = HarnessRuntime(
+                store=task_store,
+                tools=_file_registry(workspace),
+                long_task_store=long_task_store,
+            )
+            resumed = await runtime.resume_with_user_approval(
+                run_id="benchmark-approval",
+                checkpoint_id=checkpoint_id,
+                feedback="benchmark approval",
+            )
+            records = long_task_store.list_side_effects("benchmark-approval")
+            open_interactions = long_task_store.list_pending_interactions(
+                "benchmark-approval",
+                status=InteractionStatus.OPEN,
+            )
+            confirmed = sum(
+                1 for record in records if record.status is SideEffectStatus.CONFIRMED
+            )
+            output_matches = (workspace / "result.txt").read_text() == "verified\n"
+            task_store.close()
+            long_task_store.close()
+
+        return BenchmarkObservation(
+            accepted=resumed.accepted,
+            status=resumed.run.status,
+            recovered=tick.status is WorkerTickStatus.PARKED,
+            metrics={
+                "confirmed_side_effects": confirmed,
+                "duplicate_side_effects": max(0, len(records) - 1),
+                "open_interactions": len(open_interactions),
+                "output_matches": output_matches,
+            },
+        )
+
+    async def _expired_lease_reclaim(self) -> BenchmarkObservation:
+        now = datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc)
+        later = now + timedelta(seconds=2)
+        tool = _BenchmarkEvidenceTool()
+        task_store = InMemoryTaskStore()
+        long_task_store = InMemoryLongTaskStore()
+        registry = ToolRegistry()
+        registry.register(tool)
+        runtime = HarnessRuntime(
+            store=task_store,
+            tools=registry,
+            long_task_store=long_task_store,
+        )
+        runtime.submit(
+            contract=_evidence_contract(
+                "benchmark-lease",
+                "reclaim expired work",
+                ("benchmark:lease",),
+            ),
+            run_id="benchmark-lease",
+            steps=(
+                RuntimeToolStep(
+                    id="lease-step",
+                    tool_name=tool.name,
+                    arguments={"ref": "benchmark:lease"},
+                    required_evidence_refs=("benchmark:lease",),
+                ),
+            ),
+        )
+        first_lease = task_store.claim_run(
+            "benchmark-lease",
+            owner_id="crashed-worker",
+            lease_seconds=1,
+            retry_budget=3,
+            now=now,
+        )
+        if first_lease is None:
+            raise RuntimeError("failed to create abandoned benchmark lease")
+        tick = await DurableWorker(
+            worker_id="recovery-worker",
+            store=task_store,
+            runtime=runtime,
+            clock=lambda: later,
+        ).run_once("benchmark-lease")
+        final_run = task_store.get_run("benchmark-lease")
+        final_lease = task_store.get_run_lease("benchmark-lease")
+        if final_run is None or final_lease is None:
+            raise RuntimeError("lease benchmark lost durable state")
+        reclaimed = int(final_lease.metadata.get("reclaimed_expired_lease") is True)
+        abandoned = int(
+            final_run.status is not TaskRunStatus.COMPLETED
+            or final_lease.state is not RunLeaseState.RELEASED
+        )
+        accepted = bool(tick.runtime_result and tick.runtime_result.accepted)
+        return BenchmarkObservation(
+            accepted=accepted,
+            status=final_run.status,
+            recovered=reclaimed == 1,
+            metrics={
+                "reclaimed_expired_leases": reclaimed,
+                "abandoned_runs": abandoned,
+            },
+        )
+
+
+class _BenchmarkEvidenceTool(Tool):
+    name = "benchmark_evidence"
+    description = "Emit deterministic benchmark evidence."
+    permission = ToolPermission.SAFE
+    is_read_only = True
+    is_concurrency_safe = True
+    input_schema = {
+        "type": "object",
+        "properties": {"ref": {"type": "string"}},
+        "required": ["ref"],
+    }
+
+    def __init__(self, *, fail_once: set[str] | None = None) -> None:
+        self._fail_once = set(fail_once or ())
+        self.calls: dict[str, int] = {}
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        ref = str(arguments.get("ref") or "")
+        self.calls[ref] = self.calls.get(ref, 0) + 1
+        if ref in self._fail_once and self.calls[ref] == 1:
+            return ToolResult.failure(
+                "injected transient benchmark failure",
+                error_type=ToolErrorType.EXTERNAL_UNAVAILABLE,
+                recoverable_by_model=True,
+                recommended_next_action=RecommendedNextAction.RETRY,
+                source=self.name,
+            )
+        return ToolResult.success(
+            f"evidence {ref}",
+            evidence=[Evidence(type="benchmark", ref=ref)],
+            source=self.name,
+        )
+
+
+class _DeduplicatingExternalAdapter:
+    def __init__(self) -> None:
+        self.dispatch_attempts = 0
+        self.logical_effects = 0
+        self._applied_keys: set[str] = set()
+
+    def apply(self, idempotency_key: str) -> None:
+        self.dispatch_attempts += 1
+        if idempotency_key in self._applied_keys:
+            return
+        self._applied_keys.add(idempotency_key)
+        self.logical_effects += 1
+
+
+class _BenchmarkExternalTool(Tool):
+    name = "benchmark_external_action"
+    description = "Apply one deduplicated benchmark side effect."
+    permission = ToolPermission.SAFE
+    is_read_only = False
+    side_effects = ("external",)
+    outbox_required = True
+    side_effect_retry_safe = True
+
+    def __init__(self, adapter: _DeduplicatingExternalAdapter) -> None:
+        self._adapter = adapter
+
+    def plan_side_effects(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[SideEffect, ...]:
+        return (
+            SideEffect(
+                type="external",
+                target="benchmark:item",
+                risk="high",
+            ),
+        )
+
+    async def execute_with_context(
+        self,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        self._adapter.apply(context.side_effect_keys[0])
+        return ToolResult.success(
+            "external benchmark action applied",
+            evidence=[Evidence(type="benchmark", ref="benchmark:external")],
+            side_effects=[
+                SideEffect(
+                    type="external",
+                    target="benchmark:item",
+                    risk="high",
+                )
+            ],
+            source=self.name,
+        )
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        raise AssertionError("benchmark runtime must provide tool execution context")
+
+
+class _CrashAfterDispatch:
+    def hit(self, point: OutboxFaultPoint, records: tuple[Any, ...]) -> None:
+        if point is OutboxFaultPoint.AFTER_DISPATCH:
+            raise InjectedOutboxCrash(point.value)
+
+
+def _runtime_with_tools(*tools: Tool) -> HarnessRuntime:
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    return HarnessRuntime(
+        store=InMemoryTaskStore(),
+        tools=registry,
+        long_task_store=InMemoryLongTaskStore(),
+    )
+
+
+def _file_registry(workspace: Path) -> ToolRegistry:
+    registry = ToolRegistry()
+    for tool in create_file_tools(workspace):
+        registry.register(tool)
+    return registry
+
+
+def _evidence_contract(
+    contract_id: str,
+    goal: str,
+    refs: tuple[str, ...],
+) -> TaskContract:
+    return TaskContract(
+        id=contract_id,
+        user_goal=goal,
+        acceptance_criteria=(
+            AcceptanceCriterion(
+                id="required-evidence",
+                description="required benchmark evidence exists",
+                type=CriterionType.TOOL_EVIDENCE,
+                evidence_refs=refs,
+            ),
+        ),
+    )
+
+
+def _compare_observation(
+    case: BenchmarkCase,
+    observation: BenchmarkObservation,
+    duration_ms: float,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    expected = case.expected
+    if observation.accepted is not expected.accepted:
+        failures.append(
+            f"accepted mismatch: {observation.accepted} != {expected.accepted}"
+        )
+    if observation.status is not expected.status:
+        failures.append(
+            f"status mismatch: {observation.status.value} != {expected.status.value}"
+        )
+    if observation.recovered is not expected.recovered:
+        failures.append(
+            f"recovered mismatch: {observation.recovered} != {expected.recovered}"
+        )
+    for name, value in expected.metrics.items():
+        observed = observation.metrics.get(name)
+        if observed != value:
+            failures.append(f"metric mismatch {name}: {observed!r} != {value!r}")
+    if duration_ms > case.max_duration_ms:
+        failures.append(
+            f"duration exceeded budget: {duration_ms:.3f} > "
+            f"{case.max_duration_ms:.3f} ms"
+        )
+    return tuple(failures)

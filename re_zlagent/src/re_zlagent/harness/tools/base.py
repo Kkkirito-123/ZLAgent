@@ -44,10 +44,8 @@ class ToolResult:
     side_effects: tuple[SideEffect, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.evidence, tuple):
-            self.evidence = tuple(self.evidence)
-        if not isinstance(self.side_effects, tuple):
-            self.side_effects = tuple(self.side_effects)
+        self.evidence = tuple(self.evidence)
+        self.side_effects = tuple(self.side_effects)
         if self.ok and self.status is ToolResultStatus.ERROR:
             raise ValueError("ok=True cannot use status=error")
         if not self.ok and self.status is ToolResultStatus.SUCCESS:
@@ -105,6 +103,7 @@ class ToolResult:
         recommended_next_action: RecommendedNextAction | None = None,
         raw: dict[str, Any] | None = None,
         evidence: tuple[Evidence, ...] | list[Evidence] = (),
+        side_effects: tuple[SideEffect, ...] | list[SideEffect] = (),
         source: str = "tool",
     ) -> "ToolResult":
         return cls(
@@ -117,6 +116,7 @@ class ToolResult:
             recoverable_by_model=recoverable_by_model,
             recommended_next_action=recommended_next_action,
             evidence=tuple(evidence),
+            side_effects=tuple(side_effects),
             source=source,
         )
 
@@ -175,6 +175,21 @@ class ToolResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ToolExecutionContext:
+    """Stable invocation identity passed to context-aware tools."""
+
+    idempotency_key: str
+    side_effect_keys: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not self.idempotency_key.strip():
+            raise ValueError("tool context idempotency_key must be non-empty")
+        object.__setattr__(self, "side_effect_keys", tuple(self.side_effect_keys))
+        if any(not item.strip() for item in self.side_effect_keys):
+            raise ValueError("tool context side-effect keys must be non-empty")
+
+
 class Tool:
     """Base class for bounded harness tools."""
 
@@ -185,6 +200,8 @@ class Tool:
     is_concurrency_safe: ClassVar[bool] = False
     is_destructive: ClassVar[bool] = False
     side_effects: ClassVar[tuple[str, ...]] = ()
+    outbox_required: ClassVar[bool] = False
+    side_effect_retry_safe: ClassVar[bool] = False
     max_result_chars: ClassVar[int] = 8_000
     interrupt_behavior: ClassVar[Literal["block", "cancel"]] = "block"
     input_schema: ClassVar[dict[str, Any]] = {
@@ -205,6 +222,27 @@ class Tool:
         """Return True when mutation requires a fresh read mark."""
 
         return False
+
+    def plan_side_effects(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[SideEffect, ...]:
+        """Declare external intents before dispatch.
+
+        Tools with ``outbox_required=True`` must override this method and return
+        every externally visible action in deterministic order.
+        """
+
+        return ()
+
+    async def execute_with_context(
+        self,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        """Execute with stable invocation identity."""
+
+        return await self.execute(arguments)
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raise NotImplementedError(f"{self.__class__.__name__}.execute not implemented")

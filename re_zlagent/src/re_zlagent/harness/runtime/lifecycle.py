@@ -11,19 +11,23 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from re_zlagent.harness.storage import TaskStore
+from re_zlagent.harness.storage import LongTaskStore, TaskStore
 from re_zlagent.harness.tasking import (
     AcceptanceDecision,
     AcceptanceGate,
     AcceptanceStatus,
     Checkpoint,
     CheckpointStatus,
+    CriterionType,
     FailureDuration,
     FailureEnvelope,
     FailureType,
     FailureVisibility,
+    InteractionKind,
+    PendingInteraction,
     PlanDAG,
     PlanStep,
+    ProgramPlan,
     RecoveryAction,
     RecoveryPolicy,
     ResumePolicy,
@@ -37,6 +41,13 @@ from re_zlagent.harness.tasking import (
     TaskRunStatus,
 )
 from re_zlagent.harness.tools import ToolRegistry, ToolResult
+
+from .context_pack import ContextPack, ContextPackBuilder
+from .outbox import (
+    OutboxAction,
+    OutboxFaultInjector,
+    SideEffectOutbox,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,14 +91,36 @@ class RuntimeToolStep:
             required_evidence_refs=self.required_evidence_refs,
             metadata={
                 "tool_name": self.tool_name,
+                "tool_arguments": dict(self.arguments),
                 "allow_confirm": self.allow_confirm,
             },
         )
 
+    @classmethod
+    def from_plan_step(cls, step: PlanStep) -> "RuntimeToolStep":
+        """Rebuild an executable step from a persisted plan step."""
+
+        metadata = dict(step.metadata)
+        return cls(
+            id=step.id,
+            tool_name=str(metadata.get("tool_name") or ""),
+            arguments=dict(metadata.get("tool_arguments") or {}),
+            allow_confirm=bool(metadata.get("allow_confirm", False)),
+            title=step.title,
+            expected_output=step.expected_output,
+            verification=step.verification,
+            depends_on=step.depends_on,
+            required_evidence_refs=step.required_evidence_refs,
+        )
+
 
 @dataclass(frozen=True, slots=True)
-class RuntimeAcceptanceInput:
-    """External acceptance facts supplied by tests or future runtime stages."""
+class RuntimeAcceptanceFacts:
+    """Trusted facts supplied by host runtime or verifier boundaries.
+
+    Planner and model output must never construct this object. It represents
+    observations that already crossed a trusted application/runtime boundary.
+    """
 
     evidence_refs: tuple[str, ...] = field(default_factory=tuple)
     passed_tests: tuple[str, ...] = field(default_factory=tuple)
@@ -99,6 +132,13 @@ class RuntimeAcceptanceInput:
         object.__setattr__(self, "passed_tests", tuple(self.passed_tests))
         object.__setattr__(self, "human_approvals", tuple(self.human_approvals))
         object.__setattr__(self, "freshness_by_ref", dict(self.freshness_by_ref))
+        for ref, verified_at in self.freshness_by_ref.items():
+            if not isinstance(ref, str) or not ref.strip():
+                raise ValueError("acceptance freshness ref must be non-empty")
+            if not isinstance(verified_at, datetime):
+                raise ValueError("acceptance freshness value must be a datetime")
+            if verified_at.tzinfo is None or verified_at.utcoffset() is None:
+                raise ValueError("acceptance freshness datetime must be timezone-aware")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +155,23 @@ class RuntimeResult:
     step_verifications: tuple[StepVerification, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeSubmission:
+    """Immutable contract, plan, and created run persisted for later execution."""
+
+    contract: TaskContract
+    plan: ProgramPlan
+    run: TaskRun
+
+
+@dataclass(frozen=True, slots=True)
+class _StepExecution:
+    """Internal result for one step through the shared lifecycle path."""
+
+    result: ToolResult
+    failure: FailureEnvelope | None = None
+
+
 class HarnessRuntime:
     """Single lifecycle path for deterministic harness execution."""
 
@@ -127,6 +184,8 @@ class HarnessRuntime:
         recovery_policy: RecoveryPolicy | None = None,
         resume_policy: ResumePolicy | None = None,
         step_verifier: StepVerifier | None = None,
+        long_task_store: LongTaskStore | None = None,
+        outbox_fault_injector: OutboxFaultInjector | None = None,
     ) -> None:
         self._store = store
         self._tools = tools
@@ -134,6 +193,15 @@ class HarnessRuntime:
         self._recovery_policy = recovery_policy or RecoveryPolicy()
         self._resume_policy = resume_policy or ResumePolicy()
         self._step_verifier = step_verifier or StepVerifier()
+        self._long_task_store = long_task_store
+        self._outbox = SideEffectOutbox(
+            long_task_store,
+            fault_injector=outbox_fault_injector,
+        )
+        self._context_pack_builder = ContextPackBuilder(
+            store,
+            long_task_store=long_task_store,
+        )
 
     async def run(
         self,
@@ -141,21 +209,98 @@ class HarnessRuntime:
         contract: TaskContract,
         run_id: str,
         steps: tuple[RuntimeToolStep, ...] | list[RuntimeToolStep],
-        acceptance: RuntimeAcceptanceInput | None = None,
+        acceptance_facts: RuntimeAcceptanceFacts | None = None,
         model_name: str | None = None,
         prompt_version: str | None = None,
+        plan_metadata: dict[str, Any] | None = None,
+        request_context: dict[str, Any] | None = None,
         interactive: bool = True,
     ) -> RuntimeResult:
+        facts = acceptance_facts or RuntimeAcceptanceFacts()
+        self.submit(
+            contract=contract,
+            run_id=run_id,
+            steps=steps,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            plan_metadata=plan_metadata,
+            request_context=request_context,
+        )
+        ordered_steps = tuple(steps)
+        self._record_acceptance_facts(
+            run_id,
+            facts,
+            idempotency_key=f"acceptance-facts:{run_id}:initial",
+        )
+        self._set_status(run_id, TaskRunStatus.RUNNING)
+
+        tool_results: list[ToolResult] = []
+
+        for step in ordered_steps:
+            stopped = self._cooperative_stop_result(run_id, tool_results)
+            if stopped is not None:
+                return stopped
+            execution = await self._execute_step(
+                run_id=run_id,
+                step=step,
+                interactive=interactive,
+                idempotency_anchor=f"tool:{step.id}",
+            )
+            tool_results.append(execution.result)
+            if execution.failure is not None:
+                return self._result(
+                    run_id=run_id,
+                    accepted=False,
+                    tool_results=tool_results,
+                    failure=execution.failure,
+                )
+
+        stopped = self._cooperative_stop_result(run_id, tool_results)
+        if stopped is not None:
+            return stopped
+
+        return self._finish_acceptance(
+            run_id=run_id,
+            contract=contract,
+            acceptance_facts=facts,
+            tool_results=tool_results,
+        )
+
+    def submit(
+        self,
+        *,
+        contract: TaskContract,
+        run_id: str,
+        steps: tuple[RuntimeToolStep, ...] | list[RuntimeToolStep],
+        model_name: str | None = None,
+        prompt_version: str | None = None,
+        plan_metadata: dict[str, Any] | None = None,
+        request_context: dict[str, Any] | None = None,
+    ) -> RuntimeSubmission:
+        """Persist one immutable plan and leave its run claimable by a worker."""
+
         if not run_id.strip():
             raise ValueError("run_id must be non-empty")
-
-        acceptance_input = acceptance or RuntimeAcceptanceInput()
-        self._validate_linear_step_dependencies(tuple(steps))
+        ordered_steps = tuple(steps)
+        self._validate_linear_step_dependencies(ordered_steps)
+        program_plan = ProgramPlan(
+            id=f"plan_{run_id}",
+            contract_id=contract.id,
+            dag=PlanDAG(tuple(step.to_plan_step() for step in ordered_steps)),
+            metadata={
+                "model_name": model_name,
+                "prompt_version": prompt_version,
+                "planner": dict(plan_metadata or {}),
+                "request_context": dict(request_context or {}),
+            },
+        )
         self._store.save_contract(contract)
-        run = self._store.create_run(
+        self._store.save_plan(program_plan)
+        self._store.create_run(
             TaskRun(
                 id=run_id,
                 contract_id=contract.id,
+                plan_id=program_plan.id,
                 model_name=model_name,
                 prompt_version=prompt_version,
             )
@@ -163,211 +308,102 @@ class HarnessRuntime:
         self._append_event(
             run_id=run_id,
             type=TaskEventType.RUN_CREATED,
-            payload={"contract_id": contract.id},
-        )
-        run = self._set_status(run_id, TaskRunStatus.RUNNING)
-
-        evidence_refs: set[str] = set(acceptance_input.evidence_refs)
-        tool_results: list[ToolResult] = []
-
-        for step in tuple(steps):
-            plan_step = step.to_plan_step()
-            self._append_step_started(run_id, plan_step)
-            result = await self._tools.execute(
-                step.tool_name,
-                step.arguments,
-                interactive=interactive,
-                allow_confirm=step.allow_confirm,
-            )
-            tool_results.append(result)
-            evidence_refs.update(item.ref for item in result.evidence)
-
-            tool_event = self._append_event(
-                run_id=run_id,
-                type=TaskEventType.TOOL_RESULT_RECORDED,
-                payload={
-                    "step_id": step.id,
-                    "tool_name": step.tool_name,
-                    "tool_arguments": dict(step.arguments),
-                    "step": self._plan_step_payload(plan_step),
-                    "result": result.to_metadata(),
-                    "content": result.content,
-                    "error": result.error,
-                },
-                evidence=result.evidence,
-                side_effects=result.side_effects,
-                idempotency_key=f"tool:{step.id}",
-            )
-
-            if not result.ok:
-                failure = self._recovery_policy.recommend_from_tool_result(
-                    tool_name=step.tool_name,
-                    result=result,
-                    failed_step=step.id,
-                )
-                checkpoint = self._create_checkpoint(
-                    run_id=run_id,
-                    status=self._checkpoint_status_for_run(failure.status),
-                    state={
-                        "failed_step_id": step.id,
-                        "tool_name": step.tool_name,
-                    },
-                    resume_from_event_id=tool_event.id,
-                    failure=failure,
-                )
-                self._append_step_verified(
-                    run_id,
-                    self._step_verification_from_failure(
-                        plan_step=plan_step,
-                        failure=failure,
-                        result=result,
-                        checkpoint_id=checkpoint.id,
-                    ),
-                    plan_step=plan_step,
-                )
-                run = self._set_status(
-                    run_id,
-                    failure.status,
-                    checkpoint_id=checkpoint.id,
-                )
-                self._append_terminal_failure_event(run_id, failure)
-                return self._result(
-                    run_id=run_id,
-                    accepted=False,
-                    tool_results=tool_results,
-                    failure=failure,
-                )
-
-            step_failure = self._verify_successful_step(
-                run_id=run_id,
-                step=step,
-                result=result,
-                tool_event=tool_event,
-                checkpoint_state={
-                    "completed_step_id": step.id,
-                    "tool_name": step.tool_name,
-                },
-            )
-            if step_failure is not None:
-                return self._result(
-                    run_id=run_id,
-                    accepted=False,
-                    tool_results=tool_results,
-                    failure=step_failure,
-                )
-
-        decision = self._acceptance_gate.evaluate(
-            contract,
-            evidence_refs=evidence_refs,
-            passed_tests=set(acceptance_input.passed_tests),
-            human_approvals=set(acceptance_input.human_approvals),
-            freshness_by_ref=acceptance_input.freshness_by_ref,
-        )
-        acceptance_event = self._append_event(
-            run_id=run_id,
-            type=TaskEventType.ACCEPTANCE_EVALUATED,
             payload={
-                "accepted": decision.accepted,
-                "status": decision.status.value,
-                "reason": decision.reason,
-                "passed_criteria": list(decision.passed_criteria),
-                "failed_criteria": list(decision.failed_criteria),
-                "blocked_criteria": list(decision.blocked_criteria),
-                "optional_failed_criteria": list(decision.optional_failed_criteria),
+                "contract_id": contract.id,
+                "plan_id": program_plan.id,
+                "model_name": model_name,
+                "prompt_version": prompt_version,
             },
         )
+        persisted_run = self._store.get_run(run_id)
+        if persisted_run is None:
+            raise RuntimeError(f"submitted run disappeared: {run_id}")
+        return RuntimeSubmission(
+            contract=contract,
+            plan=program_plan,
+            run=persisted_run,
+        )
 
-        if decision.accepted:
-            checkpoint = self._create_checkpoint(
-                run_id=run_id,
-                status=CheckpointStatus.COMPLETED,
-                state={"accepted": True},
-                resume_from_event_id=acceptance_event.id,
-            )
-            run = self._set_status(
-                run_id,
-                TaskRunStatus.COMPLETED,
-                checkpoint_id=checkpoint.id,
-            )
-            self._append_event(
-                run_id=run_id,
-                type=TaskEventType.RUN_COMPLETED,
-                payload={"reason": decision.reason},
-            )
-            return self._result(
-                run_id=run_id,
-                accepted=True,
-                tool_results=tool_results,
-                acceptance_decision=decision,
-            )
+    async def resume_incomplete_run(
+        self,
+        *,
+        run_id: str,
+        acceptance_facts: RuntimeAcceptanceFacts | None = None,
+        interactive: bool = True,
+    ) -> RuntimeResult:
+        """Recover a created/running run from its persisted plan and events."""
 
-        if decision.status is AcceptanceStatus.BLOCKED:
-            checkpoint = self._create_checkpoint(
-                run_id=run_id,
-                status=CheckpointStatus.WAITING_USER,
-                state={
-                    "accepted": False,
-                    "blocked_criteria": list(decision.blocked_criteria),
-                },
-                resume_from_event_id=acceptance_event.id,
+        run, contract, program_plan = self._require_resume_state(run_id)
+        if run.status not in {TaskRunStatus.CREATED, TaskRunStatus.RUNNING}:
+            raise ValueError(
+                "incomplete-run recovery requires created or running status"
             )
-            run = self._set_status(
-                run_id,
-                TaskRunStatus.WAITING_USER,
-                checkpoint_id=checkpoint.id,
-            )
-            self._append_event(
-                run_id=run_id,
-                type=TaskEventType.USER_INPUT_REQUIRED,
-                payload={"blocked_criteria": list(decision.blocked_criteria)},
-            )
+        updated = self._set_status(run_id, TaskRunStatus.RUNNING)
+        if updated.status is not TaskRunStatus.RUNNING:
             return self._result(
                 run_id=run_id,
                 accepted=False,
-                tool_results=tool_results,
-                acceptance_decision=decision,
+                tool_results=[],
             )
-
-        failure = FailureEnvelope(
-            status=TaskRunStatus.ACCEPTANCE_FAILED,
-            failed_step="acceptance",
-            failure_type=FailureType.ACCEPTANCE_FAILED,
-            root_cause=decision.reason,
-            recoverable=False,
-            recommended_action=RecoveryAction.STOP,
-            visibility=FailureVisibility.IMPLICIT,
-            duration=FailureDuration.PERMANENT,
-            metadata={
-                "failed_criteria": list(decision.failed_criteria),
-                "blocked_criteria": list(decision.blocked_criteria),
-            },
-        )
-        checkpoint = self._create_checkpoint(
-            run_id=run_id,
-            status=CheckpointStatus.ACCEPTANCE_FAILED,
-            state={
-                "accepted": False,
-                "failed_criteria": list(decision.failed_criteria),
-            },
-            resume_from_event_id=acceptance_event.id,
-            failure=failure,
-        )
-        run = self._set_status(
+        facts = self._effective_acceptance_facts(
             run_id,
-            TaskRunStatus.ACCEPTANCE_FAILED,
-            checkpoint_id=checkpoint.id,
+            acceptance_facts,
+            idempotency_key=(
+                f"acceptance-facts:{run_id}:incomplete:{updated.event_seq}"
+            ),
         )
-        self._append_event(
+        context_pack = self._context_pack_builder.build(
             run_id=run_id,
-            type=TaskEventType.RUN_FAILED,
-            payload=failure.to_dict(),
+            program_plan=program_plan,
         )
-        return self._result(
+        statuses = dict(context_pack.metadata.get("step_statuses") or {})
+        running_step_ids = tuple(
+            step_id
+            for step_id in program_plan.dag.topological_step_ids()
+            if statuses.get(step_id) == StepStatus.RUNNING.value
+        )
+        results: list[ToolResult] = []
+        if len(running_step_ids) > 1:
+            return self._fail_stalled_continuation(
+                run_id=run_id,
+                program_plan=program_plan,
+                context_pack=context_pack,
+                tool_results=results,
+            )
+        if running_step_ids:
+            step = RuntimeToolStep.from_plan_step(
+                program_plan.step_by_id(running_step_ids[0])
+            )
+            execution = await self._execute_step(
+                run_id=run_id,
+                step=step,
+                interactive=interactive,
+                idempotency_anchor=(
+                    f"incomplete:{context_pack.event_seq}:tool:{step.id}"
+                ),
+                event_context={
+                    "worker_recovery": self._context_pack_anchor(context_pack),
+                },
+                checkpoint_context={
+                    "recovered_incomplete_step_id": step.id,
+                    "program_plan_id": program_plan.id,
+                },
+            )
+            results.append(execution.result)
+            if execution.failure is not None:
+                return self._result(
+                    run_id=run_id,
+                    accepted=False,
+                    tool_results=results,
+                    failure=execution.failure,
+                )
+        return await self._continue_remaining_plan(
             run_id=run_id,
-            accepted=False,
-            tool_results=tool_results,
-            acceptance_decision=decision,
-            failure=failure,
+            contract=contract,
+            program_plan=program_plan,
+            acceptance_facts=facts,
+            interactive=interactive,
+            tool_results=results,
         )
 
     async def resume_from_checkpoint(
@@ -375,26 +411,13 @@ class HarnessRuntime:
         *,
         run_id: str,
         checkpoint_id: str | None = None,
-        acceptance: RuntimeAcceptanceInput | None = None,
+        acceptance_facts: RuntimeAcceptanceFacts | None = None,
         interactive: bool = True,
     ) -> RuntimeResult:
         """Resume a failed run from its latest checkpoint when policy allows it."""
 
-        run = self._store.get_run(run_id)
-        if run is None:
-            raise ValueError(f"unknown run id: {run_id}")
-        contract = self._store.get_contract(run.contract_id)
-        if contract is None:
-            raise ValueError(f"unknown contract id: {run.contract_id}")
-        checkpoint = (
-            self._store.get_checkpoint(checkpoint_id)
-            if checkpoint_id is not None
-            else self._store.latest_checkpoint(run_id)
-        )
-        if checkpoint is None:
-            raise ValueError(f"run has no checkpoint: {run_id}")
-        if checkpoint.run_id != run_id:
-            raise ValueError("checkpoint does not belong to run")
+        _, contract, program_plan = self._require_resume_state(run_id)
+        checkpoint = self._select_checkpoint(run_id, checkpoint_id)
 
         decision = self._resume_policy.decide(checkpoint)
         if not decision.can_resume:
@@ -432,78 +455,427 @@ class HarnessRuntime:
                 failure=checkpoint.failure,
             )
 
+        if not decision.failed_step:
+            raise ValueError("resume decision has no failed step")
         source_event = self._resume_source_event(run_id, checkpoint)
-        source_step = dict(source_event.payload.get("step") or {})
-        step = RuntimeToolStep(
-            id=str(source_event.payload.get("step_id") or decision.failed_step),
-            tool_name=str(source_event.payload.get("tool_name") or ""),
-            arguments=dict(source_event.payload.get("tool_arguments") or {}),
-            title=source_step.get("title"),
-            expected_output=str(source_step.get("expected_output") or ""),
-            verification=str(source_step.get("verification") or ""),
-            depends_on=tuple(
-                str(item)
-                for item in source_step.get("depends_on") or ()
-            ),
-            required_evidence_refs=tuple(
-                str(item)
-                for item in source_step.get("required_evidence_refs") or ()
-            ),
+        step = RuntimeToolStep.from_plan_step(
+            program_plan.step_by_id(decision.failed_step)
         )
-        plan_step = step.to_plan_step()
-        self._set_status(run_id, TaskRunStatus.RUNNING, checkpoint_id=checkpoint.id)
-        self._append_step_started(
+        facts = self._effective_acceptance_facts(
             run_id,
-            plan_step,
-            payload={
+            acceptance_facts,
+            idempotency_key=f"acceptance-facts:{checkpoint.id}:retry",
+        )
+        updated = self._set_status(
+            run_id,
+            TaskRunStatus.RUNNING,
+            checkpoint_id=checkpoint.id,
+        )
+        if updated.status is not TaskRunStatus.RUNNING:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[],
+                failure=checkpoint.failure,
+            )
+        execution = await self._execute_step(
+            run_id=run_id,
+            step=step,
+            interactive=interactive,
+            idempotency_anchor=f"resume:{checkpoint.id}:tool:{step.id}",
+            event_context={
                 "resume": {
                     "checkpoint_id": checkpoint.id,
                     "source_event_id": source_event.id,
                     "action": decision.action.value,
-                },
+                }
+            },
+            checkpoint_context={
+                "retry_of_checkpoint_id": checkpoint.id,
             },
         )
-        result = await self._tools.execute(
+        if execution.failure is not None:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[execution.result],
+                failure=execution.failure,
+            )
+        return await self._continue_remaining_plan(
+            run_id=run_id,
+            contract=contract,
+            program_plan=program_plan,
+            acceptance_facts=facts,
+            interactive=interactive,
+            tool_results=[execution.result],
+        )
+
+    async def resume_with_alternative_tool(
+        self,
+        *,
+        run_id: str,
+        alternative_step: RuntimeToolStep,
+        checkpoint_id: str | None = None,
+        acceptance_facts: RuntimeAcceptanceFacts | None = None,
+        interactive: bool = True,
+    ) -> RuntimeResult:
+        """Resume a checkpoint with an explicit alternative tool step."""
+
+        _, contract, program_plan = self._require_resume_state(run_id)
+        checkpoint = self._select_checkpoint(run_id, checkpoint_id)
+        failure = checkpoint.failure
+        if failure is None:
+            raise ValueError("checkpoint has no failure envelope")
+        if failure.recommended_action is not RecoveryAction.USE_ALTERNATIVE_TOOL:
+            raise ValueError("checkpoint is not waiting for alternative tool")
+
+        source_event = self._resume_source_event(run_id, checkpoint)
+        original_step = RuntimeToolStep.from_plan_step(
+            program_plan.step_by_id(failure.failed_step)
+        )
+        step = self._replacement_step(original_step, alternative_step)
+        facts = self._effective_acceptance_facts(
+            run_id,
+            acceptance_facts,
+            idempotency_key=f"acceptance-facts:{checkpoint.id}:alternative",
+        )
+        updated = self._set_status(
+            run_id,
+            TaskRunStatus.RUNNING,
+            checkpoint_id=checkpoint.id,
+        )
+        if updated.status is not TaskRunStatus.RUNNING:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[],
+                failure=checkpoint.failure,
+            )
+        execution = await self._execute_step(
+            run_id=run_id,
+            step=step,
+            interactive=interactive,
+            idempotency_anchor=f"alternative:{checkpoint.id}:tool:{step.id}",
+            event_context={
+                "alternative": {
+                    "checkpoint_id": checkpoint.id,
+                    "source_event_id": source_event.id,
+                    "failed_step": failure.failed_step,
+                    "replacement_for_tool": failure.metadata.get("tool_name"),
+                    "provided_step_id": alternative_step.id,
+                    "alternative_tool": alternative_step.tool_name,
+                },
+            },
+            checkpoint_context={
+                "alternative_of_checkpoint_id": checkpoint.id,
+                "alternative_tool": alternative_step.tool_name,
+            },
+        )
+        if execution.failure is not None:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[execution.result],
+                failure=execution.failure,
+            )
+        return await self._continue_remaining_plan(
+            run_id=run_id,
+            contract=contract,
+            program_plan=program_plan,
+            acceptance_facts=facts,
+            interactive=interactive,
+            tool_results=[execution.result],
+        )
+
+    async def resume_with_user_approval(
+        self,
+        *,
+        run_id: str,
+        checkpoint_id: str | None = None,
+        feedback: str = "",
+        acceptance_facts: RuntimeAcceptanceFacts | None = None,
+        interactive: bool = True,
+    ) -> RuntimeResult:
+        """Resume an ask-user checkpoint after explicit user approval."""
+
+        _, contract, program_plan = self._require_resume_state(run_id)
+        checkpoint = self._select_checkpoint(run_id, checkpoint_id)
+        failure = checkpoint.failure
+        approval_ids = self._approval_criterion_ids(contract, checkpoint)
+        if failure is None and not approval_ids:
+            raise ValueError("checkpoint is not waiting for user approval")
+        if failure is not None and failure.recommended_action is not RecoveryAction.ASK_USER:
+            raise ValueError("checkpoint is not waiting for user approval")
+
+        new_facts = self._merge_acceptance_facts(
+            acceptance_facts or RuntimeAcceptanceFacts(),
+            RuntimeAcceptanceFacts(human_approvals=approval_ids),
+        )
+        facts = self._effective_acceptance_facts(
+            run_id,
+            new_facts,
+            idempotency_key=f"acceptance-facts:{checkpoint.id}:approval",
+        )
+        self._resolve_checkpoint_interaction(
+            checkpoint,
+            answer=feedback.strip() or "approved",
+        )
+        self._append_event(
+            run_id=run_id,
+            type=TaskEventType.USER_INPUT_RECORDED,
+            payload={
+                "checkpoint_id": checkpoint.id,
+                "approved": True,
+                "feedback": feedback,
+                "failed_step": failure.failed_step if failure else None,
+                "approved_criteria": list(approval_ids),
+            },
+        )
+        updated = self._set_status(
+            run_id,
+            TaskRunStatus.RUNNING,
+            checkpoint_id=checkpoint.id,
+        )
+        if updated.status is not TaskRunStatus.RUNNING:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[],
+                failure=checkpoint.failure,
+            )
+
+        if failure is None:
+            return await self._continue_remaining_plan(
+                run_id=run_id,
+                contract=contract,
+                program_plan=program_plan,
+                acceptance_facts=facts,
+                interactive=interactive,
+                tool_results=[],
+            )
+
+        source_event = self._resume_source_event(run_id, checkpoint)
+        original_step = RuntimeToolStep.from_plan_step(
+            program_plan.step_by_id(failure.failed_step)
+        )
+        step = self._approved_step(original_step)
+        execution = await self._execute_step(
+            run_id=run_id,
+            step=step,
+            interactive=interactive,
+            idempotency_anchor=f"approval:{checkpoint.id}:tool:{step.id}",
+            event_context={
+                "user_approval": {
+                    "checkpoint_id": checkpoint.id,
+                    "source_event_id": source_event.id,
+                },
+            },
+            checkpoint_context={
+                "approval_of_checkpoint_id": checkpoint.id,
+            },
+        )
+        if execution.failure is not None:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=[execution.result],
+                failure=execution.failure,
+            )
+        return await self._continue_remaining_plan(
+            run_id=run_id,
+            contract=contract,
+            program_plan=program_plan,
+            acceptance_facts=facts,
+            interactive=interactive,
+            tool_results=[execution.result],
+        )
+
+    async def _continue_remaining_plan(
+        self,
+        *,
+        run_id: str,
+        contract: TaskContract,
+        program_plan: ProgramPlan,
+        acceptance_facts: RuntimeAcceptanceFacts,
+        interactive: bool,
+        tool_results: list[ToolResult],
+    ) -> RuntimeResult:
+        """Continue the persisted unfinished frontier through one linear path."""
+
+        results = list(tool_results)
+        while True:
+            stopped = self._cooperative_stop_result(run_id, results)
+            if stopped is not None:
+                return stopped
+            context_pack = self._context_pack_builder.build(
+                run_id=run_id,
+                program_plan=program_plan,
+            )
+            incomplete = self._incomplete_step_ids(program_plan, context_pack)
+            if not incomplete:
+                return self._finish_acceptance(
+                    run_id=run_id,
+                    contract=contract,
+                    acceptance_facts=acceptance_facts,
+                    tool_results=results,
+                )
+            if context_pack.pending_interactions:
+                self._set_status(run_id, TaskRunStatus.WAITING_USER)
+                checkpoint = self._store.latest_checkpoint(run_id)
+                return self._result(
+                    run_id=run_id,
+                    accepted=False,
+                    tool_results=results,
+                    failure=checkpoint.failure if checkpoint else None,
+                )
+            if not context_pack.frontier_step_ids:
+                return self._fail_stalled_continuation(
+                    run_id=run_id,
+                    program_plan=program_plan,
+                    context_pack=context_pack,
+                    tool_results=results,
+                )
+
+            step_id = context_pack.frontier_step_ids[0]
+            step = RuntimeToolStep.from_plan_step(program_plan.step_by_id(step_id))
+            execution = await self._execute_step(
+                run_id=run_id,
+                step=step,
+                interactive=interactive,
+                idempotency_anchor=f"continuation:{step.id}",
+                event_context={
+                    "continuation": self._context_pack_anchor(context_pack),
+                },
+                checkpoint_context={
+                    "program_plan_id": program_plan.id,
+                    "continued_from_event_seq": context_pack.event_seq,
+                },
+            )
+            results.append(execution.result)
+            if execution.failure is not None:
+                return self._result(
+                    run_id=run_id,
+                    accepted=False,
+                    tool_results=results,
+                    failure=execution.failure,
+                )
+
+    async def _execute_step(
+        self,
+        *,
+        run_id: str,
+        step: RuntimeToolStep,
+        interactive: bool,
+        idempotency_anchor: str,
+        event_context: dict[str, Any] | None = None,
+        checkpoint_context: dict[str, Any] | None = None,
+    ) -> _StepExecution:
+        """Execute one step through the shared event/checkpoint lifecycle."""
+
+        plan_step = step.to_plan_step()
+        self._append_step_started(run_id, plan_step, payload=event_context)
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"unknown run id: {run_id}")
+        if run.plan_id is None:
+            raise ValueError(f"run has no persisted plan: {run_id}")
+        logical_side_effect_key = (
+            f"run:{run_id}:plan:{run.plan_id}:step:{step.id}"
+        )
+        prepared_call = self._tools.prepare(
             step.tool_name,
             step.arguments,
             interactive=interactive,
             allow_confirm=step.allow_confirm,
+            idempotency_key=logical_side_effect_key,
         )
+        outbox = self._outbox.prepare(
+            run_id=run_id,
+            plan_id=run.plan_id,
+            step_id=step.id,
+            call=prepared_call,
+        )
+        if outbox.action is OutboxAction.DISPATCH:
+            self._outbox.after_intent_persisted(outbox)
+            outbox = self._outbox.begin_dispatch(outbox)
+            result = await self._tools.execute_prepared(prepared_call)
+            self._outbox.after_dispatch(outbox)
+            outbox, result = self._outbox.record_result(
+                outbox,
+                result,
+                expected_intents=prepared_call.side_effect_intents,
+            )
+            self._outbox.before_result_commit(outbox)
+        elif outbox.action in {OutboxAction.REPLAY_RESULT, OutboxAction.BLOCK}:
+            if outbox.result is None:
+                raise RuntimeError("outbox decision has no result")
+            result = outbox.result
+        else:
+            result = await self._tools.execute_prepared(prepared_call)
+            if result.side_effects:
+                outbox, result = self._outbox.record_unplanned_result(
+                    run_id=run_id,
+                    plan_id=run.plan_id,
+                    step_id=step.id,
+                    call=prepared_call,
+                    result=result,
+                )
+        payload = {
+            "step_id": step.id,
+            "tool_name": step.tool_name,
+            "tool_arguments": dict(step.arguments),
+            "step": self._plan_step_payload(plan_step),
+            "result": result.to_metadata(),
+            "content": result.content,
+            "error": result.error,
+            "side_effect_outbox": {
+                "action": outbox.action.value,
+                "record_ids": [record.id for record in outbox.records],
+                "statuses": [record.status.value for record in outbox.records],
+            },
+        }
+        if event_context:
+            payload.update(event_context)
         tool_event = self._append_event(
             run_id=run_id,
             type=TaskEventType.TOOL_RESULT_RECORDED,
-            payload={
-                "step_id": step.id,
-                "tool_name": step.tool_name,
-                "tool_arguments": dict(step.arguments),
-                "step": self._plan_step_payload(plan_step),
-                "result": result.to_metadata(),
-                "content": result.content,
-                "error": result.error,
-                "resume": {
-                    "checkpoint_id": checkpoint.id,
-                    "source_event_id": source_event.id,
-                    "action": decision.action.value,
-                },
-            },
+            payload=payload,
             evidence=result.evidence,
             side_effects=result.side_effects,
-            idempotency_key=f"resume:{checkpoint.id}:tool:{step.id}",
+            idempotency_key=idempotency_anchor,
         )
+        if outbox.action is not OutboxAction.BYPASS:
+            outbox = self._outbox.confirm_result(
+                outbox,
+                result_event_id=tool_event.id,
+            )
+
+        checkpoint_state = {
+            "step_id": step.id,
+            "tool_name": step.tool_name,
+        }
+        if checkpoint_context:
+            checkpoint_state.update(checkpoint_context)
+
         if not result.ok:
             failure = self._recovery_policy.recommend_from_tool_result(
                 tool_name=step.tool_name,
                 result=result,
                 failed_step=step.id,
             )
-            new_checkpoint = self._create_checkpoint(
+            current_run = self._store.get_run(run_id)
+            if current_run is None:
+                raise ValueError(f"unknown run id: {run_id}")
+            checkpoint_status = (
+                self._checkpoint_status_for_run(current_run.status)
+                if current_run.status
+                in {TaskRunStatus.PAUSED, TaskRunStatus.CANCELLED}
+                else self._checkpoint_status_for_run(failure.status)
+            )
+            checkpoint = self._create_checkpoint(
                 run_id=run_id,
-                status=self._checkpoint_status_for_run(failure.status),
-                state={
-                    "failed_step_id": step.id,
-                    "tool_name": step.tool_name,
-                    "retry_of_checkpoint_id": checkpoint.id,
-                },
+                status=checkpoint_status,
+                state={"failed_step_id": step.id, **checkpoint_state},
                 resume_from_event_id=tool_event.id,
                 failure=failure,
             )
@@ -513,13 +885,24 @@ class HarnessRuntime:
                     plan_step=plan_step,
                     failure=failure,
                     result=result,
-                    checkpoint_id=new_checkpoint.id,
+                    checkpoint_id=checkpoint.id,
                 ),
                 plan_step=plan_step,
             )
-            self._set_status(run_id, failure.status, checkpoint_id=new_checkpoint.id)
-            self._append_terminal_failure_event(run_id, failure)
-            return self._result(run_id=run_id, accepted=False, tool_results=[result], failure=failure)
+            updated = self._set_status(
+                run_id,
+                failure.status,
+                checkpoint_id=checkpoint.id,
+            )
+            if updated.status is failure.status:
+                self._append_terminal_failure_event(run_id, failure)
+                self._open_interaction_for_failure(
+                    run_id=run_id,
+                    step_id=step.id,
+                    checkpoint=checkpoint,
+                    failure=failure,
+                )
+            return _StepExecution(result=result, failure=failure)
 
         step_failure = self._verify_successful_step(
             run_id=run_id,
@@ -528,323 +911,342 @@ class HarnessRuntime:
             tool_event=tool_event,
             checkpoint_state={
                 "completed_step_id": step.id,
-                "tool_name": step.tool_name,
-                "retry_of_checkpoint_id": checkpoint.id,
+                **checkpoint_state,
             },
         )
-        if step_failure is not None:
-            return self._result(
-                run_id=run_id,
-                accepted=False,
-                tool_results=[result],
-                failure=step_failure,
-            )
-        return self._finish_acceptance(
-            run_id=run_id,
-            contract=contract,
-            acceptance=acceptance or RuntimeAcceptanceInput(),
-            tool_results=[result],
-        )
+        return _StepExecution(result=result, failure=step_failure)
 
-    async def resume_with_alternative_tool(
+    def _open_interaction_for_failure(
         self,
         *,
         run_id: str,
-        alternative_step: RuntimeToolStep,
-        checkpoint_id: str | None = None,
-        acceptance: RuntimeAcceptanceInput | None = None,
-        interactive: bool = True,
-    ) -> RuntimeResult:
-        """Resume a checkpoint with an explicit alternative tool step."""
-
-        self._validate_linear_step_dependencies((alternative_step,))
-        run = self._store.get_run(run_id)
-        if run is None:
-            raise ValueError(f"unknown run id: {run_id}")
-        contract = self._store.get_contract(run.contract_id)
-        if contract is None:
-            raise ValueError(f"unknown contract id: {run.contract_id}")
-        checkpoint = (
-            self._store.get_checkpoint(checkpoint_id)
-            if checkpoint_id is not None
-            else self._store.latest_checkpoint(run_id)
-        )
-        if checkpoint is None:
-            raise ValueError(f"run has no checkpoint: {run_id}")
-        if checkpoint.run_id != run_id:
-            raise ValueError("checkpoint does not belong to run")
-        failure = checkpoint.failure
-        if failure is None:
-            raise ValueError("checkpoint has no failure envelope")
-        if failure.recommended_action is not RecoveryAction.USE_ALTERNATIVE_TOOL:
-            raise ValueError("checkpoint is not waiting for alternative tool")
-
-        source_event = self._resume_source_event(run_id, checkpoint)
-        plan_step = alternative_step.to_plan_step()
-        self._set_status(run_id, TaskRunStatus.RUNNING, checkpoint_id=checkpoint.id)
-        self._append_step_started(
-            run_id,
-            plan_step,
-            payload={
-                "alternative": {
-                    "checkpoint_id": checkpoint.id,
-                    "source_event_id": source_event.id,
-                    "failed_step": failure.failed_step,
-                    "replacement_for_tool": failure.metadata.get("tool_name"),
-                },
-            },
-        )
-        result = await self._tools.execute(
-            alternative_step.tool_name,
-            alternative_step.arguments,
-            interactive=interactive,
-            allow_confirm=alternative_step.allow_confirm,
-        )
-        tool_event = self._append_event(
-            run_id=run_id,
-            type=TaskEventType.TOOL_RESULT_RECORDED,
-            payload={
-                "step_id": alternative_step.id,
-                "tool_name": alternative_step.tool_name,
-                "tool_arguments": dict(alternative_step.arguments),
-                "step": self._plan_step_payload(plan_step),
-                "result": result.to_metadata(),
-                "content": result.content,
-                "error": result.error,
-                "alternative": {
-                    "checkpoint_id": checkpoint.id,
-                    "source_event_id": source_event.id,
-                    "failed_step": failure.failed_step,
-                    "replacement_for_tool": failure.metadata.get("tool_name"),
-                },
-            },
-            evidence=result.evidence,
-            side_effects=result.side_effects,
-            idempotency_key=f"alternative:{checkpoint.id}:tool:{alternative_step.id}",
-        )
-        if not result.ok:
-            new_failure = self._recovery_policy.recommend_from_tool_result(
-                tool_name=alternative_step.tool_name,
-                result=result,
-                failed_step=alternative_step.id,
-            )
-            new_checkpoint = self._create_checkpoint(
-                run_id=run_id,
-                status=self._checkpoint_status_for_run(new_failure.status),
-                state={
-                    "failed_step_id": alternative_step.id,
-                    "tool_name": alternative_step.tool_name,
-                    "alternative_of_checkpoint_id": checkpoint.id,
-                },
-                resume_from_event_id=tool_event.id,
-                failure=new_failure,
-            )
-            self._append_step_verified(
-                run_id,
-                self._step_verification_from_failure(
-                    plan_step=plan_step,
-                    failure=new_failure,
-                    result=result,
-                    checkpoint_id=new_checkpoint.id,
-                ),
-                plan_step=plan_step,
-            )
-            self._set_status(
-                run_id,
-                new_failure.status,
-                checkpoint_id=new_checkpoint.id,
-            )
-            self._append_terminal_failure_event(run_id, new_failure)
-            return self._result(
-                run_id=run_id,
-                accepted=False,
-                tool_results=[result],
-                failure=new_failure,
-            )
-
-        step_failure = self._verify_successful_step(
-            run_id=run_id,
-            step=alternative_step,
-            result=result,
-            tool_event=tool_event,
-            checkpoint_state={
-                "completed_step_id": alternative_step.id,
-                "tool_name": alternative_step.tool_name,
-                "alternative_of_checkpoint_id": checkpoint.id,
-            },
-        )
-        if step_failure is not None:
-            return self._result(
-                run_id=run_id,
-                accepted=False,
-                tool_results=[result],
-                failure=step_failure,
-            )
-        return self._finish_acceptance(
-            run_id=run_id,
-            contract=contract,
-            acceptance=acceptance or RuntimeAcceptanceInput(),
-            tool_results=[result],
-        )
-
-    async def resume_with_user_approval(
-        self,
-        *,
-        run_id: str,
-        checkpoint_id: str | None = None,
-        feedback: str = "",
-        acceptance: RuntimeAcceptanceInput | None = None,
-        interactive: bool = True,
-    ) -> RuntimeResult:
-        """Resume an ask-user checkpoint after explicit user approval."""
-
-        run = self._store.get_run(run_id)
-        if run is None:
-            raise ValueError(f"unknown run id: {run_id}")
-        contract = self._store.get_contract(run.contract_id)
-        if contract is None:
-            raise ValueError(f"unknown contract id: {run.contract_id}")
-        checkpoint = (
-            self._store.get_checkpoint(checkpoint_id)
-            if checkpoint_id is not None
-            else self._store.latest_checkpoint(run_id)
-        )
-        if checkpoint is None:
-            raise ValueError(f"run has no checkpoint: {run_id}")
-        if checkpoint.run_id != run_id:
-            raise ValueError("checkpoint does not belong to run")
-        failure = checkpoint.failure
-        if failure is None:
-            raise ValueError("checkpoint has no failure envelope")
+        step_id: str,
+        checkpoint: Checkpoint,
+        failure: FailureEnvelope,
+    ) -> PendingInteraction | None:
         if failure.recommended_action is not RecoveryAction.ASK_USER:
-            raise ValueError("checkpoint is not waiting for user approval")
-
-        source_event = self._resume_source_event(run_id, checkpoint)
-        source_step = dict(source_event.payload.get("step") or {})
-        step = RuntimeToolStep(
-            id=str(source_event.payload.get("step_id") or failure.failed_step),
-            tool_name=str(source_event.payload.get("tool_name") or ""),
-            arguments=dict(source_event.payload.get("tool_arguments") or {}),
-            allow_confirm=True,
-            title=source_step.get("title"),
-            expected_output=str(source_step.get("expected_output") or ""),
-            verification=str(source_step.get("verification") or ""),
-            depends_on=tuple(
-                str(item)
-                for item in source_step.get("depends_on") or ()
-            ),
-            required_evidence_refs=tuple(
-                str(item)
-                for item in source_step.get("required_evidence_refs") or ()
-            ),
+            return None
+        kind = (
+            InteractionKind.USER_APPROVAL
+            if failure.metadata.get("tool_status") == "requires_confirmation"
+            else InteractionKind.USER_INPUT
         )
-        plan_step = step.to_plan_step()
+        return self._open_interaction(
+            run_id=run_id,
+            checkpoint=checkpoint,
+            question=failure.root_cause,
+            required_by_step_id=step_id,
+            kind=kind,
+            metadata={
+                "failure_type": failure.failure_type.value,
+                "recommended_action": failure.recommended_action.value,
+            },
+        )
+
+    def _open_interaction(
+        self,
+        *,
+        run_id: str,
+        checkpoint: Checkpoint,
+        question: str,
+        required_by_step_id: str | None,
+        kind: InteractionKind,
+        metadata: dict[str, Any] | None = None,
+    ) -> PendingInteraction | None:
+        if self._long_task_store is None:
+            return None
+        interaction_id = f"interaction_{checkpoint.id}"
+        existing = self._long_task_store.get_pending_interaction(interaction_id)
+        if existing is not None:
+            return existing
+        return self._long_task_store.save_pending_interaction(
+            PendingInteraction(
+                id=interaction_id,
+                run_id=run_id,
+                checkpoint_id=checkpoint.id,
+                question=question or "User input is required to continue.",
+                required_by_step_id=required_by_step_id,
+                kind=kind,
+                metadata=metadata or {},
+            )
+        )
+
+    def _require_resume_state(
+        self,
+        run_id: str,
+    ) -> tuple[TaskRun, TaskContract, ProgramPlan]:
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"unknown run id: {run_id}")
+        contract = self._store.get_contract(run.contract_id)
+        if contract is None:
+            raise ValueError(f"unknown contract id: {run.contract_id}")
+        return run, contract, self._require_program_plan(run)
+
+    def _require_program_plan(self, run: TaskRun) -> ProgramPlan:
+        if run.plan_id is None:
+            raise ValueError(f"run has no persisted plan: {run.id}")
+        program_plan = self._store.get_plan(run.plan_id)
+        if program_plan is None:
+            raise ValueError(f"unknown plan id: {run.plan_id}")
+        if program_plan.contract_id != run.contract_id:
+            raise ValueError("persisted plan does not match run contract")
+        return program_plan
+
+    def _select_checkpoint(
+        self,
+        run_id: str,
+        checkpoint_id: str | None,
+    ) -> Checkpoint:
+        checkpoint = (
+            self._store.get_checkpoint(checkpoint_id)
+            if checkpoint_id is not None
+            else self._store.latest_checkpoint(run_id)
+        )
+        if checkpoint is None:
+            raise ValueError(f"run has no checkpoint: {run_id}")
+        if checkpoint.run_id != run_id:
+            raise ValueError("checkpoint does not belong to run")
+        return checkpoint
+
+    @staticmethod
+    def _replacement_step(
+        original: RuntimeToolStep,
+        alternative: RuntimeToolStep,
+    ) -> RuntimeToolStep:
+        """Replace execution capability without mutating the persisted plan."""
+
+        return RuntimeToolStep(
+            id=original.id,
+            tool_name=alternative.tool_name,
+            arguments=alternative.arguments,
+            allow_confirm=alternative.allow_confirm,
+            title=original.title,
+            expected_output=original.expected_output,
+            verification=original.verification,
+            depends_on=original.depends_on,
+            required_evidence_refs=original.required_evidence_refs,
+        )
+
+    @staticmethod
+    def _approved_step(original: RuntimeToolStep) -> RuntimeToolStep:
+        return RuntimeToolStep(
+            id=original.id,
+            tool_name=original.tool_name,
+            arguments=original.arguments,
+            allow_confirm=True,
+            title=original.title,
+            expected_output=original.expected_output,
+            verification=original.verification,
+            depends_on=original.depends_on,
+            required_evidence_refs=original.required_evidence_refs,
+        )
+
+    @staticmethod
+    def _approval_criterion_ids(
+        contract: TaskContract,
+        checkpoint: Checkpoint,
+    ) -> tuple[str, ...]:
+        blocked = {
+            str(item)
+            for item in checkpoint.state.get("blocked_criteria") or ()
+        }
+        return tuple(
+            criterion.id
+            for criterion in contract.acceptance_criteria
+            if criterion.id in blocked
+            and criterion.type is CriterionType.HUMAN_APPROVAL
+        )
+
+    def _resolve_checkpoint_interaction(
+        self,
+        checkpoint: Checkpoint,
+        *,
+        answer: str,
+    ) -> None:
+        if self._long_task_store is None:
+            return
+        for interaction in self._long_task_store.list_pending_interactions(
+            checkpoint.run_id
+        ):
+            if interaction.checkpoint_id == checkpoint.id and interaction.open:
+                self._long_task_store.resolve_pending_interaction(
+                    interaction.id,
+                    answer,
+                )
+
+    def _effective_acceptance_facts(
+        self,
+        run_id: str,
+        supplied: RuntimeAcceptanceFacts | None,
+        *,
+        idempotency_key: str,
+    ) -> RuntimeAcceptanceFacts:
+        persisted = self._acceptance_facts_from_events(run_id)
+        new_facts = supplied or RuntimeAcceptanceFacts()
+        self._record_acceptance_facts(
+            run_id,
+            new_facts,
+            idempotency_key=idempotency_key,
+        )
+        return self._merge_acceptance_facts(persisted, new_facts)
+
+    def _record_acceptance_facts(
+        self,
+        run_id: str,
+        facts: RuntimeAcceptanceFacts,
+        *,
+        idempotency_key: str,
+    ) -> None:
+        if not (
+            facts.evidence_refs
+            or facts.passed_tests
+            or facts.human_approvals
+            or facts.freshness_by_ref
+        ):
+            return
         self._append_event(
             run_id=run_id,
-            type=TaskEventType.USER_INPUT_RECORDED,
+            type=TaskEventType.ACCEPTANCE_FACTS_RECORDED,
             payload={
-                "checkpoint_id": checkpoint.id,
-                "approved": True,
-                "feedback": feedback,
-                "failed_step": failure.failed_step,
-            },
-        )
-        self._set_status(run_id, TaskRunStatus.RUNNING, checkpoint_id=checkpoint.id)
-        self._append_step_started(
-            run_id,
-            plan_step,
-            payload={
-                "user_approval": {
-                    "checkpoint_id": checkpoint.id,
-                    "source_event_id": source_event.id,
+                "evidence_refs": list(facts.evidence_refs),
+                "passed_tests": list(facts.passed_tests),
+                "human_approvals": list(facts.human_approvals),
+                "freshness_by_ref": {
+                    ref: verified_at.isoformat()
+                    for ref, verified_at in facts.freshness_by_ref.items()
                 },
             },
+            idempotency_key=idempotency_key,
         )
-        result = await self._tools.execute(
-            step.tool_name,
-            step.arguments,
-            interactive=interactive,
-            allow_confirm=True,
-        )
-        tool_event = self._append_event(
-            run_id=run_id,
-            type=TaskEventType.TOOL_RESULT_RECORDED,
-            payload={
-                "step_id": step.id,
-                "tool_name": step.tool_name,
-                "tool_arguments": dict(step.arguments),
-                "step": self._plan_step_payload(plan_step),
-                "result": result.to_metadata(),
-                "content": result.content,
-                "error": result.error,
-                "user_approval": {
-                    "checkpoint_id": checkpoint.id,
-                    "source_event_id": source_event.id,
-                },
-            },
-            evidence=result.evidence,
-            side_effects=result.side_effects,
-            idempotency_key=f"approval:{checkpoint.id}:tool:{step.id}",
-        )
-        if not result.ok:
-            new_failure = self._recovery_policy.recommend_from_tool_result(
-                tool_name=step.tool_name,
-                result=result,
-                failed_step=step.id,
-            )
-            new_checkpoint = self._create_checkpoint(
-                run_id=run_id,
-                status=self._checkpoint_status_for_run(new_failure.status),
-                state={
-                    "failed_step_id": step.id,
-                    "tool_name": step.tool_name,
-                    "approval_of_checkpoint_id": checkpoint.id,
-                },
-                resume_from_event_id=tool_event.id,
-                failure=new_failure,
-            )
-            self._append_step_verified(
-                run_id,
-                self._step_verification_from_failure(
-                    plan_step=plan_step,
-                    failure=new_failure,
-                    result=result,
-                    checkpoint_id=new_checkpoint.id,
-                ),
-                plan_step=plan_step,
-            )
-            self._set_status(run_id, new_failure.status, checkpoint_id=new_checkpoint.id)
-            self._append_terminal_failure_event(run_id, new_failure)
-            return self._result(
-                run_id=run_id,
-                accepted=False,
-                tool_results=[result],
-                failure=new_failure,
-            )
 
-        step_failure = self._verify_successful_step(
-            run_id=run_id,
-            step=step,
-            result=result,
-            tool_event=tool_event,
-            checkpoint_state={
-                "completed_step_id": step.id,
-                "tool_name": step.tool_name,
-                "approval_of_checkpoint_id": checkpoint.id,
+    def _acceptance_facts_from_events(self, run_id: str) -> RuntimeAcceptanceFacts:
+        facts = RuntimeAcceptanceFacts()
+        for event in self._store.list_events(run_id):
+            if event.type is not TaskEventType.ACCEPTANCE_FACTS_RECORDED:
+                continue
+            freshness = {
+                str(ref): datetime.fromisoformat(str(value))
+                for ref, value in dict(
+                    event.payload.get("freshness_by_ref") or {}
+                ).items()
+            }
+            facts = self._merge_acceptance_facts(
+                facts,
+                RuntimeAcceptanceFacts(
+                    evidence_refs=tuple(
+                        str(item)
+                        for item in event.payload.get("evidence_refs") or ()
+                    ),
+                    passed_tests=tuple(
+                        str(item)
+                        for item in event.payload.get("passed_tests") or ()
+                    ),
+                    human_approvals=tuple(
+                        str(item)
+                        for item in event.payload.get("human_approvals") or ()
+                    ),
+                    freshness_by_ref=freshness,
+                ),
+            )
+        return facts
+
+    @staticmethod
+    def _merge_acceptance_facts(
+        *items: RuntimeAcceptanceFacts,
+    ) -> RuntimeAcceptanceFacts:
+        evidence_refs: dict[str, None] = {}
+        passed_tests: dict[str, None] = {}
+        human_approvals: dict[str, None] = {}
+        freshness_by_ref: dict[str, datetime] = {}
+        for item in items:
+            evidence_refs.update(dict.fromkeys(item.evidence_refs))
+            passed_tests.update(dict.fromkeys(item.passed_tests))
+            human_approvals.update(dict.fromkeys(item.human_approvals))
+            freshness_by_ref.update(item.freshness_by_ref)
+        return RuntimeAcceptanceFacts(
+            evidence_refs=tuple(evidence_refs),
+            passed_tests=tuple(passed_tests),
+            human_approvals=tuple(human_approvals),
+            freshness_by_ref=freshness_by_ref,
+        )
+
+    @staticmethod
+    def _incomplete_step_ids(
+        program_plan: ProgramPlan,
+        context_pack: ContextPack,
+    ) -> tuple[str, ...]:
+        statuses = dict(context_pack.metadata.get("step_statuses") or {})
+        return tuple(
+            step_id
+            for step_id in program_plan.dag.topological_step_ids()
+            if statuses.get(step_id) != StepStatus.PASSED.value
+        )
+
+    @staticmethod
+    def _context_pack_anchor(context_pack: ContextPack) -> dict[str, Any]:
+        return {
+            "program_plan_id": context_pack.program_plan_id,
+            "event_seq": context_pack.event_seq,
+            "checkpoint_id": context_pack.checkpoint_id,
+            "frontier_step_ids": list(context_pack.frontier_step_ids),
+            "completed_step_ids": list(context_pack.completed_step_ids),
+            "pending_interaction_ids": [
+                str(item.get("id"))
+                for item in context_pack.pending_interactions
+            ],
+        }
+
+    def _fail_stalled_continuation(
+        self,
+        *,
+        run_id: str,
+        program_plan: ProgramPlan,
+        context_pack: ContextPack,
+        tool_results: list[ToolResult],
+    ) -> RuntimeResult:
+        incomplete = self._incomplete_step_ids(program_plan, context_pack)
+        failure = FailureEnvelope(
+            status=TaskRunStatus.FAILED,
+            failed_step=incomplete[0] if incomplete else "plan",
+            failure_type=FailureType.UNKNOWN,
+            root_cause="persisted plan has unfinished steps but no executable frontier",
+            recoverable=False,
+            recommended_action=RecoveryAction.MANUAL_REVIEW,
+            visibility=FailureVisibility.IMPLICIT,
+            duration=FailureDuration.PERMANENT,
+            metadata={
+                "program_plan_id": program_plan.id,
+                "incomplete_step_ids": list(incomplete),
+                "failed_step_ids": list(context_pack.failed_step_ids),
+                "blocked_step_ids": list(context_pack.blocked_step_ids),
             },
         )
-        if step_failure is not None:
-            return self._result(
-                run_id=run_id,
-                accepted=False,
-                tool_results=[result],
-                failure=step_failure,
-            )
-        return self._finish_acceptance(
+        events = self._store.list_events(run_id)
+        if not events:
+            raise RuntimeError("run has no event anchor for stalled continuation")
+        checkpoint = self._create_checkpoint(
             run_id=run_id,
-            contract=contract,
-            acceptance=acceptance or RuntimeAcceptanceInput(),
-            tool_results=[result],
+            status=CheckpointStatus.FAILED,
+            state={
+                "program_plan_id": program_plan.id,
+                "incomplete_step_ids": list(incomplete),
+            },
+            resume_from_event_id=events[-1].id,
+            failure=failure,
+        )
+        updated = self._set_status(
+            run_id,
+            TaskRunStatus.FAILED,
+            checkpoint_id=checkpoint.id,
+        )
+        if updated.status is TaskRunStatus.FAILED:
+            self._append_terminal_failure_event(run_id, failure)
+        return self._result(
+            run_id=run_id,
+            accepted=False,
+            tool_results=tool_results,
+            failure=failure,
         )
 
     def _append_event(
@@ -912,6 +1314,13 @@ class HarnessRuntime:
     ) -> FailureEnvelope | None:
         plan_step = step.to_plan_step()
         evidence_refs = tuple(item.ref for item in result.evidence)
+        current_run = self._store.get_run(run_id)
+        if current_run is None:
+            raise ValueError(f"unknown run id: {run_id}")
+        controlled_status = current_run.status in {
+            TaskRunStatus.PAUSED,
+            TaskRunStatus.CANCELLED,
+        }
         verification = self._step_verifier.verify(
             plan_step,
             tool_ok=True,
@@ -937,7 +1346,11 @@ class HarnessRuntime:
             )
             checkpoint = self._create_checkpoint(
                 run_id=run_id,
-                status=CheckpointStatus.FAILED,
+                status=(
+                    self._checkpoint_status_for_run(current_run.status)
+                    if controlled_status
+                    else CheckpointStatus.FAILED
+                ),
                 state={
                     **dict(checkpoint_state),
                     "failed_step_id": step.id,
@@ -956,13 +1369,22 @@ class HarnessRuntime:
                 ),
                 plan_step=plan_step,
             )
-            self._set_status(run_id, TaskRunStatus.FAILED, checkpoint_id=checkpoint.id)
-            self._append_terminal_failure_event(run_id, failure)
+            updated = self._set_status(
+                run_id,
+                TaskRunStatus.FAILED,
+                checkpoint_id=checkpoint.id,
+            )
+            if updated.status is TaskRunStatus.FAILED:
+                self._append_terminal_failure_event(run_id, failure)
             return failure
 
         checkpoint = self._create_checkpoint(
             run_id=run_id,
-            status=CheckpointStatus.RUNNING,
+            status=(
+                self._checkpoint_status_for_run(current_run.status)
+                if controlled_status
+                else CheckpointStatus.RUNNING
+            ),
             state=checkpoint_state,
             resume_from_event_id=tool_event.id,
         )
@@ -1056,9 +1478,27 @@ class HarnessRuntime:
         current = self._store.get_run(run_id)
         if current is None:
             raise ValueError(f"unknown run id: {run_id}")
-        updated = self._store.update_run(
-            current.with_status(status, checkpoint_id=checkpoint_id)
+        if (
+            current.status in {TaskRunStatus.PAUSED, TaskRunStatus.CANCELLED}
+            and current.status is not status
+        ):
+            return current
+        updated = self._store.compare_and_set_run_status(
+            run_id,
+            expected_statuses=(current.status,),
+            status=status,
+            checkpoint_id=checkpoint_id,
         )
+        if updated is None:
+            latest = self._store.get_run(run_id)
+            if latest is None:
+                raise ValueError(f"unknown run id: {run_id}")
+            if latest.status in {TaskRunStatus.PAUSED, TaskRunStatus.CANCELLED}:
+                return latest
+            raise RuntimeError(
+                f"run status changed concurrently: {current.status.value} -> "
+                f"{latest.status.value}"
+            )
         self._append_event(
             run_id=run_id,
             type=TaskEventType.STATUS_CHANGED,
@@ -1071,6 +1511,22 @@ class HarnessRuntime:
         if latest is None:
             raise ValueError(f"unknown run id: {run_id}")
         return latest
+
+    def _cooperative_stop_result(
+        self,
+        run_id: str,
+        tool_results: list[ToolResult],
+    ) -> RuntimeResult | None:
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"unknown run id: {run_id}")
+        if run.status not in {TaskRunStatus.PAUSED, TaskRunStatus.CANCELLED}:
+            return None
+        return self._result(
+            run_id=run_id,
+            accepted=False,
+            tool_results=tool_results,
+        )
 
     def _append_terminal_failure_event(
         self,
@@ -1109,10 +1565,28 @@ class HarnessRuntime:
         *,
         run_id: str,
         contract: TaskContract,
-        acceptance: RuntimeAcceptanceInput,
+        acceptance_facts: RuntimeAcceptanceFacts,
         tool_results: list[ToolResult],
     ) -> RuntimeResult:
-        evidence_refs = set(acceptance.evidence_refs)
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"unknown run id: {run_id}")
+        program_plan = self._require_program_plan(run)
+        context_pack = self._context_pack_builder.build(
+            run_id=run_id,
+            program_plan=program_plan,
+        )
+        incomplete = self._incomplete_step_ids(program_plan, context_pack)
+        if incomplete:
+            raise RuntimeError(
+                "cannot evaluate acceptance before all plan steps pass: "
+                + ", ".join(incomplete)
+            )
+        acceptance_facts = self._merge_acceptance_facts(
+            self._acceptance_facts_from_events(run_id),
+            acceptance_facts,
+        )
+        evidence_refs = set(acceptance_facts.evidence_refs)
         for event in self._store.list_events(run_id):
             if (
                 event.type is TaskEventType.TOOL_RESULT_RECORDED
@@ -1125,9 +1599,9 @@ class HarnessRuntime:
         decision = self._acceptance_gate.evaluate(
             contract,
             evidence_refs=evidence_refs,
-            passed_tests=set(acceptance.passed_tests),
-            human_approvals=set(acceptance.human_approvals),
-            freshness_by_ref=acceptance.freshness_by_ref,
+            passed_tests=set(acceptance_facts.passed_tests),
+            human_approvals=set(acceptance_facts.human_approvals),
+            freshness_by_ref=acceptance_facts.freshness_by_ref,
         )
         acceptance_event = self._append_event(
             run_id=run_id,
@@ -1149,7 +1623,18 @@ class HarnessRuntime:
                 state={"accepted": True},
                 resume_from_event_id=acceptance_event.id,
             )
-            self._set_status(run_id, TaskRunStatus.COMPLETED, checkpoint_id=checkpoint.id)
+            updated = self._set_status(
+                run_id,
+                TaskRunStatus.COMPLETED,
+                checkpoint_id=checkpoint.id,
+            )
+            if updated.status is not TaskRunStatus.COMPLETED:
+                return self._result(
+                    run_id=run_id,
+                    accepted=False,
+                    tool_results=tool_results,
+                    acceptance_decision=decision,
+                )
             self._append_event(
                 run_id=run_id,
                 type=TaskEventType.RUN_COMPLETED,
@@ -1162,6 +1647,19 @@ class HarnessRuntime:
                 acceptance_decision=decision,
             )
         if decision.status is AcceptanceStatus.BLOCKED:
+            criterion_types = {
+                criterion.id: criterion.type
+                for criterion in contract.acceptance_criteria
+            }
+            approval_only = all(
+                criterion_types.get(criterion_id) is CriterionType.HUMAN_APPROVAL
+                for criterion_id in decision.blocked_criteria
+            )
+            interaction_kind = (
+                InteractionKind.USER_APPROVAL
+                if approval_only
+                else InteractionKind.USER_INPUT
+            )
             checkpoint = self._create_checkpoint(
                 run_id=run_id,
                 status=CheckpointStatus.WAITING_USER,
@@ -1171,7 +1669,29 @@ class HarnessRuntime:
                 },
                 resume_from_event_id=acceptance_event.id,
             )
-            self._set_status(run_id, TaskRunStatus.WAITING_USER, checkpoint_id=checkpoint.id)
+            self._open_interaction(
+                run_id=run_id,
+                checkpoint=checkpoint,
+                question="Acceptance requires user approval or additional input.",
+                required_by_step_id=None,
+                kind=interaction_kind,
+                metadata={
+                    "blocked_criteria": list(decision.blocked_criteria),
+                    "acceptance_wait": True,
+                },
+            )
+            updated = self._set_status(
+                run_id,
+                TaskRunStatus.WAITING_USER,
+                checkpoint_id=checkpoint.id,
+            )
+            if updated.status is not TaskRunStatus.WAITING_USER:
+                return self._result(
+                    run_id=run_id,
+                    accepted=False,
+                    tool_results=tool_results,
+                    acceptance_decision=decision,
+                )
             self._append_event(
                 run_id=run_id,
                 type=TaskEventType.USER_INPUT_REQUIRED,
@@ -1207,7 +1727,19 @@ class HarnessRuntime:
             resume_from_event_id=acceptance_event.id,
             failure=failure,
         )
-        self._set_status(run_id, TaskRunStatus.ACCEPTANCE_FAILED, checkpoint_id=checkpoint.id)
+        updated = self._set_status(
+            run_id,
+            TaskRunStatus.ACCEPTANCE_FAILED,
+            checkpoint_id=checkpoint.id,
+        )
+        if updated.status is not TaskRunStatus.ACCEPTANCE_FAILED:
+            return self._result(
+                run_id=run_id,
+                accepted=False,
+                tool_results=tool_results,
+                acceptance_decision=decision,
+                failure=failure,
+            )
         self._append_event(
             run_id=run_id,
             type=TaskEventType.RUN_FAILED,

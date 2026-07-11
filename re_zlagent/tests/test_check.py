@@ -15,6 +15,13 @@ from re_zlagent.check import build_steps, cleanup_generated, run_checks  # noqa:
 
 
 class CheckCommandTests(unittest.TestCase):
+    def test_quality_workflow_runs_the_same_release_gate(self) -> None:
+        workflow = (ROOT / ".github/workflows/quality.yml").read_text()
+
+        self.assertIn('python-version: ["3.11", "3.13"]', workflow)
+        self.assertIn("python -m pip install -e '.[dev]'", workflow)
+        self.assertIn("python -m re_zlagent.check", workflow)
+
     def test_build_steps_can_skip_package_metadata_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -24,11 +31,28 @@ class CheckCommandTests(unittest.TestCase):
 
         self.assertEqual(
             [step.name for step in full],
-            ["unit-tests", "compileall", "cli-help", "package-dry-run"],
+            [
+                "unit-tests",
+                "release-benchmarks",
+                "compileall",
+                "lint",
+                "type-check",
+                "cli-help",
+                "benchmark-help",
+                "package-dry-run",
+            ],
         )
         self.assertEqual(
             [step.name for step in quick],
-            ["unit-tests", "compileall", "cli-help"],
+            [
+                "unit-tests",
+                "release-benchmarks",
+                "compileall",
+                "lint",
+                "type-check",
+                "cli-help",
+                "benchmark-help",
+            ],
         )
 
     def test_run_checks_sets_pythonpath_and_returns_structured_report(self) -> None:
@@ -60,12 +84,19 @@ class CheckCommandTests(unittest.TestCase):
             )
 
         self.assertTrue(report.ok)
-        self.assertEqual([step.name for step in report.steps], [
-            "unit-tests",
-            "compileall",
-            "cli-help",
-        ])
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            [step.name for step in report.steps],
+            [
+                "unit-tests",
+                "release-benchmarks",
+                "compileall",
+                "lint",
+                "type-check",
+                "cli-help",
+                "benchmark-help",
+            ],
+        )
+        self.assertEqual(len(calls), 7)
         for _, call_root, pythonpath in calls:
             self.assertEqual(call_root, root)
             self.assertEqual(pythonpath.split(os.pathsep)[0], str(root / "src"))
@@ -100,10 +131,13 @@ class CheckCommandTests(unittest.TestCase):
             )
 
         self.assertFalse(report.ok)
-        self.assertEqual([step.name for step in report.steps], [
-            "unit-tests",
-            "compileall",
-        ])
+        self.assertEqual(
+            [step.name for step in report.steps],
+            [
+                "unit-tests",
+                "release-benchmarks",
+            ],
+        )
         self.assertEqual(report.steps[-1].stderr_tail, "failed")
 
     def test_cleanup_generated_removes_python_cache_and_egg_info(self) -> None:
@@ -111,14 +145,23 @@ class CheckCommandTests(unittest.TestCase):
             root = Path(tmp)
             cache = root / "tests" / "__pycache__"
             egg_info = root / "src" / "re_zlagent.egg-info"
+            mypy_cache = root / ".mypy_cache"
+            ruff_cache = root / ".ruff_cache"
             cache.mkdir(parents=True)
             egg_info.mkdir(parents=True)
+            mypy_cache.mkdir(parents=True)
+            ruff_cache.mkdir(parents=True)
 
             removed = cleanup_generated(root)
 
             self.assertFalse(cache.exists())
             self.assertFalse(egg_info.exists())
-            self.assertEqual(set(removed), {cache, egg_info})
+            self.assertFalse(mypy_cache.exists())
+            self.assertFalse(ruff_cache.exists())
+            self.assertEqual(
+                set(removed),
+                {cache, egg_info, mypy_cache, ruff_cache},
+            )
 
 
 if __name__ == "__main__":

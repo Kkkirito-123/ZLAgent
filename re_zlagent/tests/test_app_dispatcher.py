@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,10 +12,29 @@ sys.path.insert(0, str(ROOT / "src"))
 from re_zlagent.app import ApplicationDispatcher, AgentApplication  # noqa: E402
 from re_zlagent.gateway import DeliveryTarget, IncomingMessage, OutgoingMessage  # noqa: E402
 from re_zlagent.harness.agent import AgentOrchestrator, AgentPlan, StaticAgentPlanner  # noqa: E402
-from re_zlagent.harness.runtime import HarnessRuntime, RuntimeAcceptanceInput  # noqa: E402
+from re_zlagent.harness.runtime import HarnessRuntime, RuntimeToolStep  # noqa: E402
 from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
 from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract  # noqa: E402
-from re_zlagent.harness.tools import ToolRegistry  # noqa: E402
+from re_zlagent.harness.tools import (  # noqa: E402
+    Evidence,
+    Tool,
+    ToolPermission,
+    ToolRegistry,
+    ToolResult,
+)
+
+
+class DispatchEvidenceTool(Tool):
+    name = "dispatch_evidence"
+    description = "Emit trusted dispatcher test evidence through the runtime."
+    permission = ToolPermission.SAFE
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        return ToolResult.success(
+            "dispatch evidence",
+            evidence=[Evidence(type="test", ref="dispatch:evidence")],
+            source=self.name,
+        )
 
 
 class RecordingGateway:
@@ -49,13 +69,17 @@ class AppDispatcherTests(unittest.IsolatedAsyncioTestCase):
                         id="manual-evidence",
                         description="manual evidence",
                         type=CriterionType.TOOL_EVIDENCE,
-                        evidence_refs=("manual:evidence",),
+                        evidence_refs=("dispatch:evidence",),
                     ),
                 ),
             ),
-            acceptance=RuntimeAcceptanceInput(evidence_refs=("manual:evidence",)),
+            steps=(
+                RuntimeToolStep(id="evidence", tool_name="dispatch_evidence"),
+            ),
         )
-        runtime = HarnessRuntime(store=InMemoryTaskStore(), tools=ToolRegistry())
+        tools = ToolRegistry()
+        tools.register(DispatchEvidenceTool())
+        runtime = HarnessRuntime(store=InMemoryTaskStore(), tools=tools)
         return AgentApplication(
             orchestrator=AgentOrchestrator(
                 planner=StaticAgentPlanner(plan),
