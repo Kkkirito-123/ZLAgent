@@ -11,8 +11,8 @@ Design:
   :class:`contextvars.ContextVar`. The context carries the
   per-turn send sink, dedup state (seen tool names), and the
   monotonic timestamp of the last emitted ping.
-* :meth:`ProgressEmitter.tool_invoked` is called from inside the
-  wrapped ``ToolRegistry.execute``; the emitter consults the policy
+* :meth:`ProgressEmitter.tool_invoked` is called by the explicit
+  tool-execution boundary; the emitter consults the policy
   map and the per-turn state to decide whether to ping.
 * Two suppression rules apply:
     1. **Per-turn dedup**: each tool name pings at most once per turn,
@@ -29,12 +29,7 @@ Design:
 
 Wiring:
 
-* :func:`attach_progress` monkey-patches the live
-  :class:`ToolRegistry.execute` so each call invokes
-  :meth:`ProgressEmitter.tool_invoked` before the real execute. The
-  patch sits *outside* the existing tracer + memo wrappers, so cache
-  hits still trigger a ping (the user pays attention to the tool
-  name, not the cache state).
+* :class:`backend.harness.execution.HarnessExecution` invokes the emitter.
 * :func:`bind_sink` / :func:`unbind_sink` are used by ``app.py`` to
   scope a sink to the current asyncio task — typically inside
   ``_run_agent_and_dispatch``.
@@ -45,15 +40,11 @@ import asyncio
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, TYPE_CHECKING
+from typing import Awaitable, Callable, Optional
 
 from loguru import logger
 
 from .policy import phase_to_text, tool_to_text
-
-if TYPE_CHECKING:  # pragma: no cover
-    from ...tools import ToolRegistry
-
 
 Sink = Callable[[str], Awaitable[None]]
 
@@ -184,10 +175,9 @@ class ProgressStats:
 class ProgressEmitter:
     """Coordinates progress pings; one instance per process.
 
-    Construction is cheap and side-effect-free. ``attach_progress``
-    binds it to the live :class:`ToolRegistry`; ``bind_sink`` /
-    ``unbind_sink`` (module-level functions above) bind a per-turn
-    sink. With no sink bound, all methods are no-ops.
+    Construction is cheap and side-effect-free. ``bind_sink`` /
+    ``unbind_sink`` bind a per-turn sink. With no sink bound, all methods
+    are no-ops.
     """
 
     def __init__(self, *, default_cooldown_seconds: float = 4.0) -> None:
@@ -300,84 +290,12 @@ class ProgressEmitter:
             ctx.enabled = False
 
 
-# ---------------------------------------------------------------------------
-# Boot-time wiring
-# ---------------------------------------------------------------------------
-
-
-_PROGRESS_PATCHED = "_harness_progress_attached"
-_PROGRESS_ORIGINAL = "_harness_progress_original_execute"
-
-
-def attach_progress(
-    *,
-    emitter: ProgressEmitter,
-    registry: "ToolRegistry",
-) -> None:
-    """Wrap ``registry.execute`` so every call lights up the progress emitter.
-
-    Idempotent: a second call logs a warning and is a no-op. Detach is
-    available via :func:`detach_progress`. This wrapper sits *outside*
-    the tracer + memo wrappers when called in the canonical app boot
-    order:
-
-        attach_tool_memo  (innermost, sees real execute as original)
-        attach_tracer     (wraps memo)
-        attach_progress   (outermost — what we install here)
-
-    Each call to ``registry.execute(name, args)`` therefore visits
-    progress → tracer → memo → real-execute in that order.
-    """
-    if getattr(registry, _PROGRESS_PATCHED, False):
-        logger.warning("[harness.progress] registry already wrapped; ignoring re-attach")
-        return
-
-    original_execute = registry.execute
-
-    async def progress_execute(
-        name: str,
-        arguments: Optional[dict[str, Any]] = None,
-        *,
-        allow_confirm: bool = False,
-    ):
-        try:
-            await emitter.tool_invoked(name)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — never let progress sink the call
-            logger.warning("[harness.progress] tool_invoked crashed: {}", exc)
-        return await original_execute(name, arguments, allow_confirm=allow_confirm)
-
-    setattr(registry, _PROGRESS_ORIGINAL, original_execute)
-    setattr(registry, _PROGRESS_PATCHED, True)
-    registry.execute = progress_execute  # type: ignore[method-assign]
-    logger.info("[harness.progress] attached to ToolRegistry.execute")
-
-
-def detach_progress(registry: "ToolRegistry") -> bool:
-    """Restore the original ``execute``; idempotent."""
-    if not getattr(registry, _PROGRESS_PATCHED, False):
-        return False
-    original = getattr(registry, _PROGRESS_ORIGINAL, None)
-    if original is None:
-        return False
-    registry.execute = original  # type: ignore[method-assign]
-    try:
-        delattr(registry, _PROGRESS_ORIGINAL)
-    except AttributeError:
-        pass
-    setattr(registry, _PROGRESS_PATCHED, False)
-    return True
-
-
 __all__ = [
     "ProgressEmitter",
     "ProgressStats",
     "Sink",
-    "attach_progress",
     "bind_sink",
     "current_turn_has_emitted",
-    "detach_progress",
     "try_emit_inline_via_ctx",
     "unbind_sink",
 ]

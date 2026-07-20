@@ -5,13 +5,12 @@ See :mod:`backend.harness.progress.emitter` for the design notes.
 Quick wire-up reference (used by :mod:`backend.app`):
 
     from backend.harness.progress import (
-        ProgressEmitter, attach_progress, bind_sink, unbind_sink,
+        ProgressEmitter, bind_sink, unbind_sink,
         current_turn_has_emitted,
     )
 
     emitter = ProgressEmitter()
-    attach_progress(emitter=emitter, registry=tool_registry)
-    app.state.harness.progress = emitter
+    # HarnessExecution receives the emitter during bootstrap.
     ...
     # per-turn:
     token = bind_sink(my_async_send_fn)
@@ -24,10 +23,9 @@ from .emitter import (
     ProgressEmitter,
     ProgressStats,
     Sink,
-    attach_progress,
     bind_sink,
     current_turn_has_emitted,
-    detach_progress,
+    try_emit_inline_via_ctx,
     unbind_sink,
 )
 
@@ -35,9 +33,8 @@ __all__ = [
     "ProgressEmitter",
     "ProgressStats",
     "Sink",
-    "attach_progress",
     "bind_sink",
     "current_turn_has_emitted",
-    "detach_progress",
+    "try_emit_inline_via_ctx",
     "unbind_sink",
 ]

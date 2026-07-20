@@ -17,7 +17,7 @@ from ..tool_loop.runner import _append_tool_message, _parse_tool_call_args
 if TYPE_CHECKING:
     from ...db.confirmations import ConfirmationStore
     from ...llm import LLMToolCall
-    from ...tools import ToolRegistry
+    from ...harness.execution import HarnessExecution
     from ..runtime import LoopOutcome
 
 
@@ -26,13 +26,13 @@ class ConfirmationFlow:
         self,
         *,
         store: Optional["ConfirmationStore"],
-        registry: Optional["ToolRegistry"],
+        execution: Optional["HarnessExecution"],
         memory_sync_fn,
         run_tool_loop_fn,
         system_prompt_dm: str,
     ) -> None:
         self._store = store
-        self._registry = registry
+        self._execution = execution
         self._memory_sync_fn = memory_sync_fn
         self._run_tool_loop_fn = run_tool_loop_fn
         self._system_prompt_dm = system_prompt_dm
@@ -48,7 +48,7 @@ class ConfirmationFlow:
         assert self._store is not None
         assert message.reply_target is not None
 
-        if not llm_configured or self._registry is None:
+        if not llm_configured or self._execution is None:
             return self._resume_unavailable(pending=pending, message=message)
 
         tool_result = await self._resolve_tool_result(pending, decision=decision, user_id=message.user_id)
@@ -91,19 +91,17 @@ class ConfirmationFlow:
         if decision:
             logger.info("confirmation #{} approved by user={}", pending.id, user_id)
             self._store.mark(pending.id, status=STATUS_APPROVED)
-            tool = self._registry.get(pending.tool_name)
-            if tool is None:
-                return ToolResult(ok=False, content="", error=f"tool '{pending.tool_name}' is no longer registered")
-            try:
-                tool_result = await tool.execute(pending.tool_arguments)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("resumed tool '{}' raised", pending.tool_name)
-                tool_result = ToolResult(ok=False, content="", error=f"{type(exc).__name__}: {exc}")
+            tool_result = await self._execution.execute(
+                pending.tool_name,
+                pending.tool_arguments,
+                allow_confirm=True,
+                session_id=f"{pending.platform}:{pending.user_id}",
+            )
             logger.info("resumed tool '{}' -> ok={} chars={}", pending.tool_name, tool_result.ok, len(tool_result.content))
             return tool_result
         logger.info("confirmation #{} denied by user={}", pending.id, user_id)
         self._store.mark(pending.id, status=STATUS_DENIED)
-        return ToolResult(ok=False, content="", error=f"user denied execution of '{pending.tool_name}'")
+        return ToolResult.denied(f"user denied execution of '{pending.tool_name}'")
 
     def _build_resume_outcome(
         self,

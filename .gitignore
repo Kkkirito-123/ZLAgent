@@ -24,6 +24,8 @@ workspace/knowledge_modes/
 workspace/logs/
 workspace/memory/
 workspace/runtime/
+workspace/graph/
+workspace/graph_cache/
 workspace/tmp/
 workspace/skills/.usage.json
 workspace/.zlagent/

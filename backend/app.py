@@ -18,7 +18,6 @@ from .bootstrap.gateways import build_gateway_manager
 from .bootstrap.message_dispatch import GatewayTurnDispatcher
 from .bootstrap.runtime import (
     attach_gateway_tools,
-    attach_harness_facilities,
     bind_runtime_state,
     build_runtime_container,
     load_runtime_plugins,
@@ -102,7 +101,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cron_deliverer = cron_runtime.deliverer
     bind_service_state(app, services)
     load_runtime_plugins(runtime)
-    attach_harness_facilities(runtime)
     bind_runtime_state(app, runtime)
 
     _harness_boot_inventory = app.state.harness.inventory()

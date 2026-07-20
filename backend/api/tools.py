@@ -7,9 +7,8 @@ Endpoints:
   going through the LLM. Primarily for operational debugging (e.g. verifying
   that ``web_search`` can reach DuckDuckGo from inside the container).
 
-Confirm-tier tools are refused here for the same reason they are hidden from
-the LLM schema: the confirmation broker is a v0.6 deliverable. Attempts to
-test them return ``409 Conflict`` so the caller sees a clear signal.
+Confirm-tier tools are refused because this operational endpoint does not
+represent interactive user approval. Attempts return ``409 Conflict``.
 """
 from __future__ import annotations
 
@@ -18,6 +17,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..harness import HarnessExecution
 from ..tools import ToolPermission, ToolRegistry
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
@@ -28,6 +28,13 @@ def _get_registry(request: Request) -> ToolRegistry:
     if registry is None:
         raise HTTPException(status_code=500, detail="tool registry not initialized")
     return registry
+
+
+def _get_execution(request: Request) -> HarnessExecution:
+    execution = getattr(request.app.state, "tool_execution", None)
+    if execution is None:
+        raise HTTPException(status_code=500, detail="tool execution boundary not initialized")
+    return execution
 
 
 class ToolDescriptor(BaseModel):
@@ -60,6 +67,13 @@ class ToolTestResponse(BaseModel):
     ok: bool
     content: str
     error: Optional[str] = None
+    status: str
+    error_type: Optional[str] = None
+    recoverable_by_model: bool
+    recommended_next_action: Optional[str] = None
+    source: str
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    side_effects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @router.get("", response_model=ToolListResponse)
@@ -98,10 +112,20 @@ async def test_tool(name: str, payload: ToolTestPayload, request: Request) -> To
             status_code=409,
             detail=(
                 f"tool '{name}' is permission=confirm; direct testing requires the"
-                " confirmation broker, which is planned for v0.6"
+                " interactive confirmation flow"
             ),
         )
     if tool.permission is ToolPermission.DENY:  # defensive; registry drops these
         raise HTTPException(status_code=409, detail=f"tool '{name}' is deny-listed")
-    result = await registry.execute(name, payload.arguments)
-    return ToolTestResponse(ok=result.ok, content=result.content, error=result.error)
+    result = await _get_execution(request).execute(
+        name,
+        payload.arguments,
+        session_id="api:tool-test",
+    )
+    metadata = result.to_metadata()
+    return ToolTestResponse(
+        ok=result.ok,
+        content=result.content,
+        error=result.error,
+        **{key: value for key, value in metadata.items() if key != "ok"},
+    )

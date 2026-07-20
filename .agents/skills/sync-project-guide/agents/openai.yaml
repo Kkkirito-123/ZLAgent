@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Project Guide"
+  short_description: "Check guidance and README; edit only when authorized"
+  default_prompt: "Use $sync-project-guide to inspect and report whether Agent guidance or user-facing README content needs an update; edit only files I explicitly authorize."

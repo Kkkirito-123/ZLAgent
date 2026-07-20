@@ -97,19 +97,22 @@ async def uninstall_skill(harness: "Harness", name: str) -> UninstallOutcome:
             message=_CORE_REFUSAL_TEMPLATE.format(name=name, kind="skill"),
             refused_reason="core",
         )
-    registry = harness.tool_registry
-    skill_tool = registry.get("skill_manage") if registry is not None else None
-    if skill_tool is None:
+    execution = harness.tool_execution
+    if execution is None or execution.registry.get("skill_manage") is None:
         return UninstallOutcome(
             ok=False, kind="skill", name=name,
             message="skill subsystem not initialized",
             refused_reason="missing_subsystem",
         )
-    # Calling .execute() directly bypasses the registry's confirm gate;
-    # the user typing /remove (or invoking DELETE) IS the explicit
-    # confirmation, so no second yes/no is required.
+    # The user typing /remove (or invoking DELETE) is the explicit
+    # confirmation, but execution still crosses the common harness boundary.
     try:
-        result = await skill_tool.execute({"action": "delete", "skill_name": name})
+        result = await execution.execute(
+            "skill_manage",
+            {"action": "delete", "skill_name": name},
+            allow_confirm=True,
+            session_id="harness:lifecycle",
+        )
     except Exception as exc:  # noqa: BLE001 — surface to caller
         logger.exception("[harness] uninstall_skill {!r} crashed", name)
         return UninstallOutcome(

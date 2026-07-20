@@ -40,7 +40,10 @@ class Settings(BaseSettings):
     workspace_dir: Path = Field(default=Path("/app/workspace"))
 
     # Database
-    database_url: str = "sqlite:////app/data/zlagent.db"
+    database_url: str = Field(
+        default="sqlite:////app/data/zlagent.db",
+        validation_alias=AliasChoices("DATABASE_URL", "ZLAGENT_DATABASE_URL"),
+    )
 
     # Model provider hints (not bound to a specific vendor)
     default_model: Optional[str] = None

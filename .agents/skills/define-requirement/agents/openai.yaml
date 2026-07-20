@@ -1,0 +1,4 @@
+interface:
+  display_name: "Define Requirement"
+  short_description: "Turn raw requests into an approved change contract"
+  default_prompt: "Use $define-requirement to clarify and scope this request before implementation."

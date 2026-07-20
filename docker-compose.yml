@@ -38,7 +38,8 @@ services:
       ZLAGENT_SEARXNG_URL: ${ZLAGENT_SEARXNG_URL:-}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://zlagent:zlagent@postgres:5432/zlagent}
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "8020:8020"
     volumes:

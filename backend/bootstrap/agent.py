@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from loguru import logger
 
 from ..agent.loop import AgentLoop
 from ..db.confirmations import ConfirmationStore
 from ..tools.permission import PermissionPolicy
-from ..agent.prompts import (
-    MCP_AUTO_CONFIRM_INSTALL_ACTIONS,
-    WEIXIN_AUTO_CONFIRM_SKILL_ACTIONS,
-)
 
 if TYPE_CHECKING:
     from ..core.config import Settings
@@ -18,6 +14,8 @@ if TYPE_CHECKING:
     from ..memory.manager import MemoryManager
     from ..skills.loader import SkillLoader
     from ..tools import ToolRegistry
+    from ..harness.execution import HarnessExecution
+    from ..harness.observability.tracer import TraceRecorder
 
 
 def build_confirmation_store(settings: "Settings") -> ConfirmationStore:
@@ -97,15 +95,14 @@ def build_agent(
     memory_store: Any,
     wiki_store: Any,
     geo_store: Any,
+    tool_execution: "HarnessExecution",
+    tracer: "TraceRecorder",
 ) -> AgentLoop:
     failure_learner = build_failure_learner(settings, memory_store)
     tool_guardrails = build_tool_guardrails(settings)
     summary_compressor = build_summary_compressor(settings, llm_client, memory_manager)
     crystallizer = build_crystallizer(settings, llm_client, wiki_store, geo_store)
-    permission_policy = PermissionPolicy.from_iterables(
-        mcp_auto_confirm_install_actions=MCP_AUTO_CONFIRM_INSTALL_ACTIONS,
-        weixin_auto_confirm_skill_actions=WEIXIN_AUTO_CONFIRM_SKILL_ACTIONS,
-    )
+    permission_policy = PermissionPolicy()
 
     return AgentLoop(
         llm=llm_client,
@@ -138,4 +135,6 @@ def build_agent(
         workspace_dir=settings.workspace_dir,
         tool_loop_parallel_max_concurrency=settings.tool_loop_parallel_max_concurrency,
         permission_policy=permission_policy,
+        tool_execution=tool_execution,
+        tracer=tracer,
     )

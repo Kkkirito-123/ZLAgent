@@ -44,20 +44,22 @@ if TYPE_CHECKING:
     from ..wiki.crystallizer import Crystallizer  # noqa: F401
     from ..wiki.geo_store import GeoStore  # noqa: F401
     from .routing.llm_router import RouterLLM, RouterDecision  # noqa: F401
+    from ..harness.observability.tracer import TraceRecorder
 
 from ..db.confirmations import ConfirmationStore
 from ..gateways.base import DeliveryTarget, IncomingMessage, OutgoingMessage
 from ..llm import LLMClient, LLMMessage
 from ..memory.intent import MemoryIntentSignal
 from ..memory.manager import MemoryManager
+from ..core.redact import redact_text
+from ..harness.execution import HarnessExecution
+from ..harness.observability.tracer import TurnRecord
 from ..tools.permission import PermissionPolicy
 from .recovery import CorrectionSignal, FailureLearner, ToolCallGuardrailController
-from ..skills.loader import SkillLoader
+from ..skills.loader import SkillLoader, SkillManifest
 from ..tools import ToolRegistry
 from .context import TurnContext, set_turn_context
-from .context import MemorySnapshot, RuntimeSnapshot
 from .context import ContextEngine, SummaryCompressor
-from .turn_preparer import PreparedTurn
 from .runtime import LoopOutcome
 from .runtime import adaptive_tool_budget as _adaptive_tool_budget
 from .context import (
@@ -176,9 +178,15 @@ class AgentLoop:
         # Defaults to 4; clamped to >=1 by the runner.
         tool_loop_parallel_max_concurrency: int = 4,
         permission_policy: Optional["PermissionPolicy"] = None,
+        tool_execution: Optional[HarnessExecution] = None,
+        tracer: Optional["TraceRecorder"] = None,
     ) -> None:
         self._llm = llm
         self._registry = tool_registry
+        self._tool_execution = tool_execution or (
+            HarnessExecution(tool_registry) if tool_registry is not None else None
+        )
+        self._tracer = tracer
         self._store = confirmation_store
         self._skill_loader = skill_loader
         self._memory = memory_manager
@@ -235,6 +243,7 @@ class AgentLoop:
             suspend_fn=self._suspend_for_confirmation,
             parallel_max_concurrency=tool_loop_parallel_max_concurrency,
             permission_policy=permission_policy,
+            execution=self._tool_execution,
         )
         self._post_turn = PostTurnPipeline(
             memory=memory_manager,
@@ -249,7 +258,7 @@ class AgentLoop:
         )
         self._confirmation_flow = ConfirmationFlow(
             store=confirmation_store,
-            registry=tool_registry,
+            execution=self._tool_execution,
             memory_sync_fn=self._sync_memory_turn,
             run_tool_loop_fn=self._run_tool_loop,
             system_prompt_dm=SYSTEM_PROMPT_DM,
@@ -288,6 +297,36 @@ class AgentLoop:
     # =================================================================
 
     async def run_turn(
+        self,
+        message: IncomingMessage,
+        *,
+        dispatch_fn: Optional[Callable] = None,
+    ) -> Optional[OutgoingMessage]:
+        started = time.perf_counter()
+        wall_started = time.time()
+        ok = True
+        error: Optional[str] = None
+        try:
+            return await self._run_turn_impl(message, dispatch_fn=dispatch_fn)
+        except Exception as exc:
+            ok = False
+            error = redact_text(f"{type(exc).__name__}: {exc}")
+            raise
+        finally:
+            if self._tracer is not None:
+                self._tracer.record_turn(
+                    TurnRecord(
+                        started_at=wall_started,
+                        elapsed_ms=int((time.perf_counter() - started) * 1000),
+                        platform=message.platform,
+                        user_id=message.user_id or "",
+                        text_preview=redact_text(message.text or "")[:80],
+                        ok=ok,
+                        error=error,
+                    )
+                )
+
+    async def _run_turn_impl(
         self,
         message: IncomingMessage,
         *,
@@ -493,13 +532,16 @@ class AgentLoop:
         usable content. Never raises — failures fall through to the
         normal LLM path.
         """
-        if self._registry is None:
+        if self._tool_execution is None:
             return ""
-        tool = self._registry.get("travel_realtime")
-        if tool is None:
+        if self._tool_execution.registry.get("travel_realtime") is None:
             return ""
         try:
-            result = await tool.execute({"action": "bundle", "query": query})
+            result = await self._tool_execution.execute(
+                "travel_realtime",
+                {"action": "bundle", "query": query},
+                session_id="travel:prefetch",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[skill] travel_realtime prefetch raised: {}", exc)
             return ""
@@ -749,8 +791,3 @@ class AgentLoop:
     _humanize_cron = staticmethod(_lc.humanize_cron)
     _humanize_day_part = staticmethod(_lc.humanize_day_part)
     _confirmation_preview = staticmethod(_lc.confirmation_preview)
-
-    @staticmethod
-    def _should_auto_confirm_tool(tool_name: str, arguments: dict, platform: str) -> bool:
-        from .tool_loop.runner import _should_auto_confirm_tool
-        return _should_auto_confirm_tool(tool_name, arguments, platform)

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import pathlib
 import sys
@@ -38,6 +39,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 os.environ.setdefault("ZLAGENT_DATA_DIR", str(ROOT / "data"))
 os.environ.setdefault("ZLAGENT_CONFIG_DIR", str(ROOT / "config"))
 os.environ.setdefault("ZLAGENT_WORKSPACE_DIR", str(ROOT / "workspace"))
+os.environ.setdefault("ZLAGENT_MCP_ENABLED", "false")
 os.environ.setdefault(
     "ZLAGENT_DATABASE_URL", f"sqlite:///{ROOT / 'data' / 'zlagent.db'}",
 )
@@ -58,7 +60,7 @@ from backend.gateways.base import (  # noqa: E402
     DeliveryTarget,
     IncomingMessage,
 )
-from backend.llm.openai_compatible import LLMResponse  # noqa: E402
+from backend.llm.openai_compatible import LLMResponse, LLMToolCall  # noqa: E402
 from backend.memory.intent import detect_memory_intent  # noqa: E402
 
 
@@ -89,6 +91,7 @@ MCP_PROPOSAL = (
 )
 
 MEMORY_ACK = "好的，已记住您的出行偏好。下次规划差旅会优先推荐高铁。"
+DEMO_MEMORY = "用户默认选择高铁出行，不坐飞机。"
 
 
 class ScriptedLLM:
@@ -96,10 +99,9 @@ class ScriptedLLM:
 
     The agent loop calls ``chat(messages)`` for the main turn and again
     for the post-turn review fork. We dispatch by content sniffing the
-    last user message; review-fork calls (which carry a ``[主动记忆触发]``
-    block in the system prompt) get a benign ack since the demo doesn't
-    need to demonstrate the full review-tool-call chain to land its
-    point.
+    last user message. The memory-review fork emits a real
+    ``memory_manage(remember)`` tool call, so the demo verifies durable state
+    rather than merely printing a claim.
 
     Latency simulation: each canned response includes a ``simulated_ms``
     sleep that mimics a real provider's first-byte time. Without it the
@@ -140,12 +142,31 @@ class ScriptedLLM:
         # injects a literal "[主动记忆触发]" hint block. Treat those as
         # silent no-ops in the demo — they're a separate feature with
         # their own smoke coverage.
-        joined_system = " ".join(
-            (m.content or "") for m in messages if m.role == "system"
-        )
-        if "[主动记忆触发]" in joined_system or "[skill review]" in joined_system:
+        joined = " ".join((m.content or "") for m in messages)
+        is_review = "[主动记忆触发]" in joined or "[skill review]" in joined
+        if is_review and any(m.role == "tool" for m in messages):
             self.calls.append("(review-fork)")
             return LLMResponse(content="无需更新", model=self.model)
+        if is_review:
+            self.calls.append("(review-fork)")
+            return LLMResponse(
+                content="",
+                model=self.model,
+                tool_calls=[
+                    LLMToolCall(
+                        id="demo-memory-1",
+                        name="memory_manage",
+                        arguments=json.dumps(
+                            {
+                                "action": "remember",
+                                "kind": "user_fact",
+                                "content": DEMO_MEMORY,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            )
 
         last_user = ""
         for m in reversed(messages):
@@ -279,10 +300,14 @@ def main() -> int:
     with TestClient(app) as client:
         agent = client.app.state.agent
         wiki = client.app.state.wiki_store
+        memory_store = client.app.state.memory_store
 
         # Wipe any prior travel-guide cache so turn 1 is a real miss.
         for row in wiki.list_entries(skill_id="travel-guide", limit=50):
             wiki.delete(row["id"])
+        for row in memory_store.search(DEMO_MEMORY, limit=50):
+            if row.get("content") == DEMO_MEMORY:
+                memory_store.remove(row["id"])
 
         scripted = ScriptedLLM()
         original_llm = agent._llm
@@ -373,6 +398,19 @@ def main() -> int:
                  "review fork → memory_manage(remember) writes user_fact"],
             )
             reply, ms, calls = _run_turn(loop, agent, _make_msg(4, t4_text))
+
+            async def _drain_pending_reviews() -> None:
+                pending = list(getattr(agent, "_pending_reviews", set()))
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+            loop.run_until_complete(_drain_pending_reviews())
+            stored = [
+                row
+                for row in memory_store.search(DEMO_MEMORY, limit=20)
+                if row.get("content") == DEMO_MEMORY
+            ]
+            assert stored, "memory review ran but did not persist the preference"
             turn_body(reply)
             turn_footer(
                 ms,
@@ -420,6 +458,9 @@ def main() -> int:
             agent._llm = original_llm  # type: ignore[assignment]
             for row in wiki.list_entries(skill_id="travel-guide", limit=50):
                 wiki.delete(row["id"])
+            for row in memory_store.search(DEMO_MEMORY, limit=50):
+                if row.get("content") == DEMO_MEMORY:
+                    memory_store.remove(row["id"])
             loop.close()
 
     return 0

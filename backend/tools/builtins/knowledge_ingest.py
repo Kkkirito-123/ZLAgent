@@ -37,10 +37,7 @@ class KnowledgeIngestTool(Tool):
         " summary_markdown — that produces a single output page where only the"
         " first item gets full detail and the rest become tag stubs."
     )
-    # Personal-AI mode: knowledge writes are to the operator's own
-    # workspace; per-call yes/no would make ingesting a list of papers
-    # painful. Use ``knowledge_inspect`` (safe, read-only) to verify.
-    permission = ToolPermission.SAFE
+    permission = ToolPermission.CONFIRM
     is_read_only = False
     is_concurrency_safe = False
     is_destructive = False
