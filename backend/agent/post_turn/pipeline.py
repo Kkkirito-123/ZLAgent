@@ -309,10 +309,14 @@ class PostTurnPipeline:
                 action_filter=self.review_action_filter,
                 session_id=f"review:{platform}:{user_id}",
             )
-            invoked = [n for n in outcome.invoked_tool_names if n == "skill_manage"]
+            invoked = [
+                name
+                for name in outcome.invoked_tool_names
+                if name in {"skill_manage", "memory_manage"}
+            ]
             tail = (outcome.final_text or "").strip()[:200]
             if invoked:
-                logger.info("[skill review] {} skill_manage call(s); final: {!r}", len(invoked), tail)
+                logger.info("[skill review] invoked={}; final: {!r}", invoked, tail)
             else:
                 logger.info("[skill review] no-op ({!r})", tail)
         except Exception as exc:  # noqa: BLE001

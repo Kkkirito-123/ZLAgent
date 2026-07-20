@@ -1,0 +1,6 @@
+interface:
+  display_name: "Publish Change"
+  short_description: "Publish a reviewed change only with explicit approval"
+  default_prompt: "Use $publish-change to preflight and perform only the Commit, Push, or pull-request actions I explicitly requested."
+policy:
+  allow_implicit_invocation: false

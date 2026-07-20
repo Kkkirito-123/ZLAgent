@@ -16,7 +16,10 @@ from ..bootstrap.agent import build_agent, build_confirmation_store
 from ..bootstrap.llm import build_llm, build_router_llm
 from ..db.confirmations import ConfirmationStore
 from ..db.session import SessionLocal
-from ..harness import Harness, build_harness
+from ..harness import Harness, HarnessExecution, build_harness
+from ..harness.accelerate.tool_memo import ToolMemo
+from ..harness.observability.tracer import TraceRecorder
+from ..harness.progress import ProgressEmitter
 from ..llm import LLMClient
 from ..skills.loader import SkillLoader
 from ..tools import ToolRegistry
@@ -57,6 +60,7 @@ class RuntimeContainer:
     memory_manager: Any
     graph_extractor: Any
     tool_registry: ToolRegistry
+    tool_execution: HarnessExecution
     confirmation_store: ConfirmationStore
     agent: AgentLoop
     mcp_manager: Any
@@ -120,6 +124,16 @@ async def build_runtime_container(
         "on" if redis_backend is not None else "off",
     )
 
+    tool_memo = ToolMemo()
+    tracer = TraceRecorder()
+    progress = ProgressEmitter()
+    tool_execution = HarnessExecution(
+        tool_registry,
+        memo=tool_memo,
+        tracer=tracer,
+        progress=progress,
+    )
+
     confirmation_store = build_confirmation_store(settings)
     agent = build_agent(
         settings,
@@ -132,6 +146,8 @@ async def build_runtime_container(
         memory_store=memory_store,
         wiki_store=skill_subsystem.wiki_store,
         geo_store=skill_subsystem.geo_store,
+        tool_execution=tool_execution,
+        tracer=tracer,
     )
     tool_registry.register(DelegateTool(agent))
 
@@ -150,6 +166,10 @@ async def build_runtime_container(
         mcp_manager=mcp_manager,
         mcp_lifecycle=mcp_lifecycle,
         plugin_loader=None,
+        tool_execution=tool_execution,
+        tool_memo=tool_memo,
+        tracer=tracer,
+        progress=progress,
     )
 
     return RuntimeContainer(
@@ -167,12 +187,16 @@ async def build_runtime_container(
         memory_manager=memory_manager,
         graph_extractor=graph_extractor,
         tool_registry=tool_registry,
+        tool_execution=tool_execution,
         confirmation_store=confirmation_store,
         agent=agent,
         mcp_manager=mcp_manager,
         mcp_store=mcp_store,
         mcp_lifecycle=mcp_lifecycle,
         harness=harness,
+        tool_memo=tool_memo,
+        tracer=tracer,
+        progress=progress,
     )
 
 
@@ -205,32 +229,6 @@ def load_runtime_plugins(runtime: RuntimeContainer) -> Any:
     return plugin_loader
 
 
-def attach_harness_facilities(runtime: RuntimeContainer) -> None:
-    """安装 Harness 侧的加速、观测和进度组件。"""
-    from ..harness.accelerate.tool_memo import ToolMemo, attach_tool_memo
-    from ..harness.observability.tracer import TraceRecorder, attach_tracer
-    from ..harness.progress import ProgressEmitter, attach_progress
-
-    tool_memo = ToolMemo()
-    attach_tool_memo(runtime.tool_registry, tool_memo)
-    runtime.tool_memo = tool_memo
-    runtime.harness.tool_memo = tool_memo
-
-    tracer = TraceRecorder()
-    attach_tracer(
-        tracer=tracer,
-        agent=runtime.agent,
-        registry=runtime.tool_registry,
-    )
-    runtime.tracer = tracer
-    runtime.harness.tracer = tracer
-
-    progress = ProgressEmitter()
-    attach_progress(emitter=progress, registry=runtime.tool_registry)
-    runtime.progress = progress
-    runtime.harness.progress = progress
-
-
 def bind_runtime_state(app: Any, runtime: RuntimeContainer) -> None:
     """把核心运行时对象写入 FastAPI state。"""
     app.state.redis_backend = runtime.redis_backend
@@ -239,6 +237,7 @@ def bind_runtime_state(app: Any, runtime: RuntimeContainer) -> None:
     app.state.llm = runtime.llm_client
     app.state.graph_extractor = runtime.graph_extractor
     app.state.tool_registry = runtime.tool_registry
+    app.state.tool_execution = runtime.tool_execution
     app.state.confirmation_store = runtime.confirmation_store
     app.state.skill_loader = runtime.skill_loader
     app.state.usage_store = runtime.usage_store

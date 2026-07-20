@@ -38,6 +38,7 @@ class HarnessFacade:
     """
 
     tool_registry: Optional[Any] = None
+    tool_execution: Optional[Any] = None
     skill_loader: Optional[Any] = None
     mcp_store: Optional[Any] = None
     mcp_manager: Optional[Any] = None
@@ -64,6 +65,7 @@ class HarnessFacade:
         return HarnessRuntime(
             core={
                 "tool_registry": self.tool_registry is not None,
+                "tool_execution": self.tool_execution is not None,
                 "tool_memo": self.tool_memo is not None,
                 "tracer": self.tracer is not None,
                 "progress": self.progress is not None,
@@ -122,6 +124,10 @@ def build_harness_facade(
     mcp_manager: Optional[Any] = None,
     mcp_lifecycle: Optional[Any] = None,
     plugin_loader: Optional[Any] = None,
+    tool_execution: Optional[Any] = None,
+    tool_memo: Optional[Any] = None,
+    tracer: Optional[Any] = None,
+    progress: Optional[Any] = None,
 ) -> HarnessFacade:
     """创建 Harness 门面。"""
     return HarnessFacade(
@@ -131,6 +137,10 @@ def build_harness_facade(
         mcp_manager=mcp_manager,
         mcp_lifecycle=mcp_lifecycle,
         plugin_loader=plugin_loader,
+        tool_execution=tool_execution,
+        tool_memo=tool_memo,
+        tracer=tracer,
+        progress=progress,
     )
 
 

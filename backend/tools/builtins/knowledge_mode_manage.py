@@ -245,10 +245,7 @@ class KnowledgeModeManageTool(_KnowledgeModeBase):
         "This is the ONLY action this tool exposes — list, templates,"
         " read and lint live on `knowledge_inspect` (also SAFE)."
     )
-    # Personal-AI mode: creating a knowledge mode is an operator-owned
-    # data setup step, not a security boundary. SAFE so 'help me set up
-    # an ai-paper knowledge base' flows in one turn.
-    permission = ToolPermission.SAFE
+    permission = ToolPermission.CONFIRM
     is_read_only = False
     is_concurrency_safe = False
     is_destructive = False

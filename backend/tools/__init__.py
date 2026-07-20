@@ -9,6 +9,13 @@ The registry is the single place tools are discovered and filtered. The agent
 loop consumes the registry in :mod:`backend.agent.loop`.
 """
 from .base import Tool, ToolPermission, ToolResult
+from .metadata import (
+    Evidence,
+    RecommendedNextAction,
+    SideEffect,
+    ToolErrorType,
+    ToolResultStatus,
+)
 from .permission import PermissionDecision, PermissionPolicy, PermissionResult
 from .registry import ToolRegistry
 
@@ -16,8 +23,13 @@ __all__ = [
     "PermissionDecision",
     "PermissionPolicy",
     "PermissionResult",
+    "Evidence",
+    "RecommendedNextAction",
+    "SideEffect",
     "Tool",
+    "ToolErrorType",
     "ToolPermission",
     "ToolResult",
+    "ToolResultStatus",
     "ToolRegistry",
 ]

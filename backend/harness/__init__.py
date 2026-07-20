@@ -6,6 +6,7 @@ skills、memory、tools、mcp、cron 等独立包实现。
 """
 
 from .extensions.inventory import HarnessInventory, build_inventory
+from .execution import HarnessExecution
 from .facade import (
     Harness,
     HarnessFacade,
@@ -17,6 +18,7 @@ from .facade import (
 __all__ = [
     "Harness",
     "HarnessFacade",
+    "HarnessExecution",
     "HarnessInventory",
     "HarnessRuntime",
     "build_harness",

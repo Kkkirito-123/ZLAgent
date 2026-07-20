@@ -302,19 +302,9 @@ REVIEW_ALLOWED_MEMORY_ACTIONS = frozenset(
     {"remember", "recall", "list", "consolidate"}
 )
 
-WEIXIN_AUTO_CONFIRM_SKILL_ACTIONS = frozenset({"create", "edit", "patch", "write_file"})
 WEIXIN_DIRECT_DONE_CRON_ACTIONS = frozenset(
     {"create", "update", "pause", "resume", "remove"}
 )
-
-# v1.1.1 — IM users have an "外围随意安装 MCP" path: any platform may call
-# mcp_manage install/install_and_add without the yes/no gate. The
-# confirmation gate is enforced upstream via the IM-entrypoint allowlist
-# (gateway-level), not per call. Other mcp_manage actions (add / remove /
-# update / promote / reconnect) keep the confirm gate because they can
-# attach hostile configs or break a live runtime.
-MCP_AUTO_CONFIRM_INSTALL_ACTIONS = frozenset({"install", "install_and_add"})
-
 
 def _current_time_prompt_block() -> str:
     """Per-turn dynamic prompt suffix exposing the current Beijing time.

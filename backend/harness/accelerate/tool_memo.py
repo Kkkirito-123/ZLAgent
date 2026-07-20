@@ -16,9 +16,8 @@ Design:
 * TTL defaults to 600 seconds; entries past TTL are evicted on read.
 * Total cache size capped at :data:`DEFAULT_CAPACITY`; FIFO eviction.
 
-The cache is attached to the live :class:`ToolRegistry` by
-:func:`attach_tool_memo` which monkey-patches ``execute`` once at
-boot. Smoke can call :func:`detach_tool_memo` to restore the original.
+The explicit :class:`backend.harness.execution.HarnessExecution` boundary owns
+cache lookup and insertion. This module contains no runtime patching.
 """
 from __future__ import annotations
 
@@ -26,13 +25,11 @@ import hashlib
 import json
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Iterable, Optional, TYPE_CHECKING
 
-from loguru import logger
-
 if TYPE_CHECKING:  # pragma: no cover
-    from ...tools import ToolRegistry, ToolResult
+    from ...tools import ToolResult
 
 
 # ---------------------------------------------------------------------------
@@ -163,92 +160,10 @@ class ToolMemo:
         self.stats = MemoStats()
 
 
-# ---------------------------------------------------------------------------
-# ToolRegistry attachment (boot-time monkey-patch)
-# ---------------------------------------------------------------------------
-
-
-# Sentinel attribute the patch sets on the registry so detach can
-# restore the original execute() and so a double-attach is detected.
-_PATCHED_FLAG = "_harness_memo_attached"
-_ORIGINAL_EXECUTE_ATTR = "_harness_memo_original_execute"
-
-
-def attach_tool_memo(
-    registry: "ToolRegistry",
-    memo: ToolMemo,
-    *,
-    session_id_getter: Optional[Any] = None,
-) -> None:
-    """Wrap ``registry.execute`` with a memoization layer.
-
-    Safe to call once at boot; re-calling logs a warning and is a
-    no-op. ``session_id_getter`` is an optional zero-arg callable that
-    returns the current session id (used as part of the cache key);
-    when ``None`` the cache key uses a global namespace and entries
-    are shared across sessions.
-    """
-    if getattr(registry, _PATCHED_FLAG, False):
-        logger.warning("[harness.memo] registry already wrapped; ignoring re-attach")
-        return
-
-    original_execute = registry.execute
-
-    async def memoized_execute(
-        name: str,
-        arguments: Optional[dict[str, Any]] = None,
-        *,
-        allow_confirm: bool = False,
-    ):
-        if not memo.is_memoizable(name):
-            memo.mark_skipped()
-            return await original_execute(name, arguments, allow_confirm=allow_confirm)
-        session_id = None
-        if callable(session_id_getter):
-            try:
-                session_id = session_id_getter()
-            except Exception:  # noqa: BLE001 — never let the getter sink the call
-                session_id = None
-        key = memo.cache_key(name, arguments, session_id=session_id)
-        hit = memo.get(key)
-        if hit is not None:
-            logger.debug("[harness.memo] HIT {} session={}", name, session_id or "_")
-            return hit
-        result = await original_execute(name, arguments, allow_confirm=allow_confirm)
-        memo.put(key, result)
-        return result
-
-    setattr(registry, _ORIGINAL_EXECUTE_ATTR, original_execute)
-    setattr(registry, _PATCHED_FLAG, True)
-    registry.execute = memoized_execute  # type: ignore[method-assign]
-    logger.info(
-        "[harness.memo] attached: ttl={}s capacity={} tools={}",
-        memo._ttl, memo._capacity, sorted(memo.memoizable_tools),
-    )
-
-
-def detach_tool_memo(registry: "ToolRegistry") -> bool:
-    """Restore ``registry.execute`` to its pre-attach implementation."""
-    if not getattr(registry, _PATCHED_FLAG, False):
-        return False
-    original = getattr(registry, _ORIGINAL_EXECUTE_ATTR, None)
-    if original is None:
-        return False
-    registry.execute = original  # type: ignore[method-assign]
-    try:
-        delattr(registry, _ORIGINAL_EXECUTE_ATTR)
-    except AttributeError:
-        pass
-    setattr(registry, _PATCHED_FLAG, False)
-    return True
-
-
 __all__ = [
     "DEFAULT_CAPACITY",
     "DEFAULT_MEMOIZABLE_TOOLS",
     "DEFAULT_TTL_SECONDS",
     "MemoStats",
     "ToolMemo",
-    "attach_tool_memo",
-    "detach_tool_memo",
 ]

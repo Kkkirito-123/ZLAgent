@@ -36,7 +36,6 @@ from loguru import logger
 
 from ...core.provenance import (
     BACKGROUND_REVIEW,
-    FOREGROUND,
     get_current_write_origin,
 )
 from ...skills.guard import SkillGuard
@@ -53,7 +52,6 @@ from ...skills.history import (
 from ...skills.usage import (
     CREATED_BY_AGENT,
     CREATED_BY_USER,
-    STATE_ARCHIVED,
     UsageStore,
 )
 from ..base import Tool, ToolPermission, ToolResult
@@ -72,11 +70,8 @@ class SkillManageTool(Tool):
         "Use this for reusable procedures, recurring automations, or fixes worth keeping. "
         "Prefer `patch` for small edits; use `edit` only when replacing the full `SKILL.md`."
     )
-    # Personal-AI mode: the operator owns the skills, so writes don't
-    # need an IM yes/no per turn. Vetting still happens via the
-    # ``skill-vetter`` skill before publishing complex skills, but the
-    # initial CRUD calls are immediate.
-    permission = ToolPermission.SAFE
+    # Every action mutates the workspace or imports external content.
+    permission = ToolPermission.CONFIRM
     is_read_only = False
     is_concurrency_safe = False
     is_destructive = True

@@ -113,13 +113,10 @@ class MemoryManageTool(Tool):
         " Examples: '老婆叫小明，生日 6 月 15';"
         " '我喜欢回复简短，不超过 50 字';"
         " '我在做一个叫 ZLAgent 的项目'.\n\n"
-        "Permission tier is **safe** for personal-AI use — writes go"
-        " through without an IM yes/no. The operator owns the data and"
-        " expects the agent to remember corrections immediately (e.g.,"
-        " '我叫 ZL，别再叫小明' should land in memory on the next"
-        " message, not after a confirmation round-trip). Be conservative"
-        " about WHAT you remember (see the rules below), not about"
-        " whether to ask."
+        "Permission tier is **confirm** for writes. Read-only recall/list"
+        " actions run directly; remember/forget/pin/unpin/consolidate require"
+        " user approval unless invoked by an explicitly trusted background"
+        " review path."
         "\n\n"
         "**Memory model (钱学森工程控制论)**:\n"
         "  1. First layer: control-theory base logic — goal, state,"
@@ -169,7 +166,7 @@ class MemoryManageTool(Tool):
         " (e.g. 'ignore previous instructions', 'curl ... $API_KEY')."
         " If a write is refused, rephrase to drop the trigger phrase."
     )
-    permission = ToolPermission.SAFE
+    permission = ToolPermission.CONFIRM
     is_read_only = False
     is_concurrency_safe = False
     is_destructive = True
@@ -266,6 +263,10 @@ class MemoryManageTool(Tool):
         # summarise; this prevents the "agent saved my whole 7-day
         # itinerary as a fact" failure mode.
         self._max_fact_chars = max(60, int(max_fact_chars))
+
+    def is_action_read_only(self, arguments: dict[str, Any] | None) -> bool:
+        action = str((arguments or {}).get("action") or "").strip().lower()
+        return action in {"recall", "list"}
 
     # =================================================================
     # entry point

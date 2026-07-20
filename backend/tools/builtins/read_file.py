@@ -14,9 +14,14 @@ Security model (minimal but strict):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, TYPE_CHECKING
+
+from loguru import logger
 
 from ..base import Tool, ToolPermission, ToolResult
+
+if TYPE_CHECKING:
+    from ...skills.usage import UsageStore
 
 MAX_BYTES = 256 * 1024
 PROBE_BYTES = 1024

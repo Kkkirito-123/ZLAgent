@@ -112,7 +112,7 @@ async def harness_trace_tools(
     request: Request,
     n: int = Query(50, ge=1, le=500),
 ) -> dict[str, Any]:
-    """Recent ``ToolRegistry.execute`` records."""
+    """Recent explicit harness tool-execution records."""
     harness = _get_harness(request)
     tracer = getattr(harness, "tracer", None)
     if tracer is None:

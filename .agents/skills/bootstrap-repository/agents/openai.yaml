@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bootstrap Repository"
+  short_description: "Build a verified project-specific repository guide"
+  default_prompt: "Use $bootstrap-repository to inspect this template-derived repository and prepare its verified project guide."

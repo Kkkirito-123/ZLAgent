@@ -6,6 +6,7 @@ from typing import Any, Iterable, Optional
 from loguru import logger
 
 from .base import Tool, ToolPermission, ToolResult
+from .metadata import ToolErrorType
 
 
 class ToolRegistry:
@@ -18,7 +19,8 @@ class ToolRegistry:
       the agent loop at all.
     * ``CONFIRM``-tier tools are registered but are hidden from the LLM
       schema by default (``include_confirm=False``). Attempting to execute
-      one returns an error until v0.6 ships the confirmation broker.
+      one returns a structured confirmation-required result unless the
+      explicit execution boundary passes ``allow_confirm=True``.
     * ``SAFE``-tier tools execute immediately; exceptions become
       ``ToolResult(ok=False, ...)`` so a single buggy tool cannot crash
       the agent loop.
@@ -203,20 +205,25 @@ class ToolRegistry:
     ) -> ToolResult:
         tool = self._tools.get(name)
         if tool is None:
-            return ToolResult(ok=False, content="", error=f"unknown tool: {name}")
+            return ToolResult.failure(
+                f"unknown tool: {name}",
+                error_type=ToolErrorType.NOT_FOUND,
+                recoverable_by_model=True,
+                source="registry",
+            )
         if tool.permission is ToolPermission.DENY:  # defensive; shouldn't happen
-            return ToolResult(ok=False, content="", error=f"tool denied: {name}")
+            return ToolResult.denied(f"tool denied: {name}")
         if tool.permission is ToolPermission.CONFIRM and not allow_confirm:
-            return ToolResult(
-                ok=False,
-                content="",
-                error=(
-                    f"tool '{name}' requires user confirmation which is not implemented yet"
-                    " (v0.6). Pick a safe tool or ask the user to approve manually."
-                ),
+            return ToolResult.requires_confirmation(
+                f"tool '{name}' requires user confirmation."
             )
         try:
             return await tool.execute(arguments or {})
         except Exception as exc:  # noqa: BLE001 - keep agent loop alive
             logger.exception("tool '{}' raised during execute", name)
-            return ToolResult(ok=False, content="", error=f"{type(exc).__name__}: {exc}")
+            return ToolResult.failure(
+                f"{type(exc).__name__}: {exc}",
+                error_type=ToolErrorType.TOOL_EXCEPTION,
+                recoverable_by_model=True,
+                source=name,
+            )

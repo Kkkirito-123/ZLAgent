@@ -20,7 +20,7 @@ keyword matching of the "is this even needed?" pre-check.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from typing import Sequence
 
 
 @dataclass(slots=True)

@@ -5,21 +5,28 @@ than they prevent). Subclasses override the class-level ``name`` /
 ``description`` / ``permission`` / ``parameters_schema`` attributes and
 implement the async ``execute()`` coroutine.
 
-``ToolPermission`` encodes the v0.5 trust model:
+``ToolPermission`` encodes the runtime trust model:
 
 * ``SAFE``    — read-only side effects; registry executes immediately.
-* ``CONFIRM`` — mutating or externally-visible action; registry refuses in v0.5
-                (the confirmation broker lands in v0.6). These tools are also
-                omitted from the LLM-facing schema by default so the model does
-                not waste tokens trying to call something that will be denied.
+* ``CONFIRM`` — mutating or externally-visible action; an interactive turn
+                suspends until the user approves, while trusted host workflows
+                may pass an explicit approval grant.
 * ``DENY``    — never allowed. Registered tools with this tier are dropped at
                 ``register()`` time so they cannot be invoked at all.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
+
+from .metadata import (
+    Evidence,
+    RecommendedNextAction,
+    SideEffect,
+    ToolErrorType,
+    ToolResultStatus,
+)
 
 
 class ToolPermission(str, Enum):
@@ -33,20 +40,97 @@ class ToolResult:
     """Structured return value of a tool invocation.
 
     ``ok=True`` results are fed back to the LLM as-is under the ``tool`` role.
-    ``ok=False`` results are surfaced as ``[tool error] ...`` strings so the
-    LLM can recover (retry with different args, pick a different tool, or tell
-    the user it cannot proceed).
+    ``ok=False`` results include status and error type in the tool-role message
+    so the LLM can recover (retry with different args, pick a different tool,
+    or tell the user it cannot proceed).
     """
 
     ok: bool
     content: str
     error: str | None = None
     raw: dict[str, Any] | None = None
+    status: ToolResultStatus = ToolResultStatus.SUCCESS
+    error_type: ToolErrorType | None = None
+    recoverable_by_model: bool = False
+    recommended_next_action: RecommendedNextAction | None = None
+    source: str = "tool"
+    evidence: tuple[Evidence, ...] = field(default_factory=tuple)
+    side_effects: tuple[SideEffect, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        self.evidence = tuple(self.evidence)
+        self.side_effects = tuple(self.side_effects)
+        if not self.ok and self.status is ToolResultStatus.SUCCESS:
+            self.status = ToolResultStatus.ERROR
+
+    @classmethod
+    def failure(
+        cls,
+        error: str,
+        *,
+        error_type: ToolErrorType = ToolErrorType.UNKNOWN,
+        recoverable_by_model: bool = False,
+        recommended_next_action: RecommendedNextAction | None = None,
+        source: str = "tool",
+    ) -> "ToolResult":
+        return cls(
+            ok=False,
+            content="",
+            error=error,
+            status=ToolResultStatus.ERROR,
+            error_type=error_type,
+            recoverable_by_model=recoverable_by_model,
+            recommended_next_action=recommended_next_action,
+            source=source,
+        )
+
+    @classmethod
+    def denied(cls, reason: str) -> "ToolResult":
+        return cls(
+            ok=False,
+            content="",
+            error=reason,
+            status=ToolResultStatus.DENIED,
+            error_type=ToolErrorType.PERMISSION_DENIED,
+            recommended_next_action=RecommendedNextAction.STOP,
+            source="permission",
+        )
+
+    @classmethod
+    def requires_confirmation(cls, reason: str) -> "ToolResult":
+        return cls(
+            ok=False,
+            content="",
+            error=reason,
+            status=ToolResultStatus.REQUIRES_CONFIRMATION,
+            error_type=ToolErrorType.PERMISSION_DENIED,
+            recommended_next_action=RecommendedNextAction.ASK_USER,
+            source="permission",
+        )
 
     def to_tool_message_content(self) -> str:
         if self.ok:
             return self.content
-        return f"[tool error] {self.error or 'unknown error'}"
+        prefix = f"[tool {self.status.value}]"
+        if self.error_type is not None:
+            prefix = f"{prefix} {self.error_type.value}:"
+        return f"{prefix} {self.error or 'unknown error'}"
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "status": self.status.value,
+            "error_type": self.error_type.value if self.error_type else None,
+            "recoverable_by_model": self.recoverable_by_model,
+            "recommended_next_action": (
+                self.recommended_next_action.value
+                if self.recommended_next_action is not None
+                else None
+            ),
+            "source": self.source,
+            "evidence": [item.to_dict() for item in self.evidence],
+            "side_effects": [item.to_dict() for item in self.side_effects],
+        }
 
 
 class Tool:
@@ -87,13 +171,10 @@ class Tool:
         overriding this hook to return True for the specific actions
         they consider read-only.
 
-        Default is ``False`` — historical behaviour where the confirm
-        flow gates every invocation. The ``is_read_only`` class flag
-        is *not* consulted here because SAFE-tier tools already bypass
-        the confirm path entirely, so the only callers of this hook
-        are CONFIRM-tier multi-action tools that explicitly opt-in.
+        Default follows the tool-level ``is_read_only`` contract. Confirm-tier
+        multi-action tools override this hook when only some actions are safe.
         """
-        return False
+        return self.is_read_only
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:  # pragma: no cover - abstract
         raise NotImplementedError(f"{self.__class__.__name__}.execute not implemented")

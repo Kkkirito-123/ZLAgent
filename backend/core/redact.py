@@ -10,9 +10,13 @@ Belongs to the core layer: no dependencies on agent/skills/tools.
 from __future__ import annotations
 
 import re
-from typing import Pattern
+from typing import Any, Pattern
 
 REDACTED = "[REDACTED]"
+
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|cookie|credential)"
+)
 
 _PATTERNS: list[tuple[Pattern[str], str]] = [
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}\b"), REDACTED),
@@ -51,4 +55,22 @@ def redact_text(text: str) -> str:
     return out
 
 
-__all__ = ["REDACTED", "redact_text"]
+def redact_mapping(value: Any, *, key: str = "") -> Any:
+    """Recursively redact values whose mapping key names a credential."""
+    if key and _SENSITIVE_KEY.search(key):
+        return REDACTED
+    if isinstance(value, dict):
+        return {
+            str(item_key): redact_mapping(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_mapping(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_mapping(item) for item in value)
+    if isinstance(value, str):
+        return redact_text(value)
+    return value
+
+
+__all__ = ["REDACTED", "redact_mapping", "redact_text"]

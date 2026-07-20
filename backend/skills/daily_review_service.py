@@ -654,7 +654,12 @@ class DailyReviewService:
     # prompt construction
     # ====================================================================
 
-    def _build_user_block(self, inputs: dict[str, Any]) -> str:
+    def _build_user_block(
+        self,
+        inputs: dict[str, Any],
+        *,
+        graph_review: Optional[dict[str, Any]] = None,
+    ) -> str:
         """Render the structured user message the review LLM reads.
 
         Sections mirror the END_OF_DAY_REVIEW_PROMPT's "工作输入" list

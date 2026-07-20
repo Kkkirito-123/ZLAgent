@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement Change"
+  short_description: "Make a minimal verified change within bounded scope"
+  default_prompt: "Use $implement-change to implement this bounded coding change."

@@ -3,24 +3,23 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from dataclasses import replace
+from typing import Callable, Optional, TYPE_CHECKING
 
 from loguru import logger
 
+from ...core.redact import redact_mapping
 from ...tools import ToolPermission, ToolResult
 from ...tools.permission import PermissionDecision, PermissionPolicy
 from ...llm import LLMMessage
-from ..prompts import (
-    MCP_AUTO_CONFIRM_INSTALL_ACTIONS,
-    WEIXIN_AUTO_CONFIRM_SKILL_ACTIONS,
-    WEIXIN_DIRECT_DONE_CRON_ACTIONS,
-)
+from ..prompts import WEIXIN_DIRECT_DONE_CRON_ACTIONS
 from ..recovery import append_toolguard_guidance, toolguard_synthetic_result
 from . import types as _t
 
 if TYPE_CHECKING:
     from ...llm import LLMToolCall
     from ...tools import ToolRegistry
+    from ...harness.execution import HarnessExecution
     from ..recovery import ToolCallGuardrailController
     from ..context import ContextEngine
     from ..runtime import LoopOutcome
@@ -28,10 +27,7 @@ if TYPE_CHECKING:
 MAX_TOOL_MESSAGE_CHARS = 20_000
 
 
-DEFAULT_PERMISSION_POLICY = PermissionPolicy.from_iterables(
-    mcp_auto_confirm_install_actions=MCP_AUTO_CONFIRM_INSTALL_ACTIONS,
-    weixin_auto_confirm_skill_actions=WEIXIN_AUTO_CONFIRM_SKILL_ACTIONS,
-)
+DEFAULT_PERMISSION_POLICY = PermissionPolicy()
 
 
 def _parse_tool_call_args(tc: "LLMToolCall") -> tuple[dict, str]:
@@ -49,10 +45,11 @@ def _parse_tool_call_args(tc: "LLMToolCall") -> tuple[dict, str]:
 
 
 def _log_tool_result(tc: "LLMToolCall", arguments: dict, result: ToolResult) -> None:
+    safe_arguments = redact_mapping(arguments)
     if result.ok:
-        logger.info("tool '{}' -> ok=True chars={} args={}", tc.name, len(result.content), arguments)
+        logger.info("tool '{}' -> ok=True chars={} args={}", tc.name, len(result.content), safe_arguments)
     else:
-        logger.warning("tool '{}' -> ok=False error={!r} args={}", tc.name, result.error, arguments)
+        logger.warning("tool '{}' -> ok=False error={!r} args={}", tc.name, result.error, safe_arguments)
 
 
 def _append_tool_message(
@@ -70,22 +67,7 @@ def _append_tool_message(
     history.append(LLMMessage(role="tool", content=content, name=tool_name, tool_call_id=tool_call_id))
 
 
-def _should_auto_confirm_tool(tool_name: str, arguments: dict, platform: str) -> bool:
-    return DEFAULT_PERMISSION_POLICY.should_auto_confirm_tool(
-        tool_name, arguments, platform,
-    )
-
-
-def _is_action_read_only(tool: Optional[Any], arguments: dict) -> bool:
-    """v0.45 — bypass the confirm prompt for read-only invocations
-    of multi-action tools (``cron_manage`` with action='list', etc.).
-    Returns False whenever the tool is None or the override decides
-    the action mutates state.
-    """
-    return DEFAULT_PERMISSION_POLICY.is_action_read_only(tool, arguments)
-
-
-def _direct_auto_confirm_reply(
+def _direct_completion_reply(
     platform: str,
     prepared: list["_t.PreparedToolCall"],
     new_outcomes: list[tuple[str, bool, Optional[str]]],
@@ -137,6 +119,7 @@ class ToolLoopRunner:
         suspend_fn: Optional[Callable] = None,
         parallel_max_concurrency: int = 4,
         permission_policy: Optional[PermissionPolicy] = None,
+        execution: Optional["HarnessExecution"] = None,
     ) -> None:
         self._registry = registry
         self._guardrails = guardrails
@@ -146,6 +129,7 @@ class ToolLoopRunner:
         self._suspend_fn = suspend_fn
         self._parallel_max_concurrency = max(1, int(parallel_max_concurrency))
         self._permission_policy = permission_policy or DEFAULT_PERMISSION_POLICY
+        self._execution = execution
 
     async def run(
         self,
@@ -245,8 +229,13 @@ class ToolLoopRunner:
                 prepared, history=history,
                 tool_outcomes=control.tool_outcomes,
                 activated_deferred_tools=control.activated_deferred_tools,
+                session_id=session_id,
             )
-            direct_reply = _direct_auto_confirm_reply(platform, prepared, control.tool_outcomes[outcome_start:])
+            direct_reply = _direct_completion_reply(
+                platform,
+                prepared,
+                control.tool_outcomes[outcome_start:],
+            )
             if direct_reply is not None:
                 return control.outcome(direct_reply)
 
@@ -396,6 +385,7 @@ class ToolLoopRunner:
         history: list[LLMMessage],
         tool_outcomes: list[tuple[str, bool, Optional[str]]],
         activated_deferred_tools: set[str],
+        session_id: Optional[str],
     ) -> None:
         if not prepared:
             return
@@ -414,7 +404,7 @@ class ToolLoopRunner:
 
             async def _gated(item: "_t.PreparedToolCall") -> ToolResult:
                 async with sema:
-                    return await self._call_one(item)
+                    return await self._call_one(item, session_id=session_id)
 
             batch_started = time.perf_counter()
             for i in parallel_indices:
@@ -429,7 +419,7 @@ class ToolLoopRunner:
             if task is not None:
                 result = await task
             else:
-                result = await self._call_one(item)
+                result = await self._call_one(item, session_id=session_id)
             self._record_result(
                 item, result,
                 history=history, tool_outcomes=tool_outcomes,
@@ -443,11 +433,21 @@ class ToolLoopRunner:
                 len(parallel_tasks), concurrency, elapsed,
             )
 
-    async def _call_one(self, item: "_t.PreparedToolCall") -> ToolResult:
-        assert self._registry is not None
+    async def _call_one(
+        self,
+        item: "_t.PreparedToolCall",
+        *,
+        session_id: Optional[str],
+    ) -> ToolResult:
+        assert self._execution is not None
         started = time.perf_counter()
         try:
-            return await self._registry.execute(item.tc.name, item.arguments, allow_confirm=item.allow_confirm)
+            return await self._execution.execute(
+                item.tc.name,
+                item.arguments,
+                allow_confirm=item.allow_confirm,
+                session_id=session_id,
+            )
         finally:
             logger.info("[perf] tool name={} elapsed_ms={}", item.tc.name, int((time.perf_counter() - started) * 1000))
 
@@ -472,10 +472,9 @@ class ToolLoopRunner:
             )
             if decision.action in {"warn", "halt"} and decision.message:
                 logger.info("[guardrail] {} tool '{}' code={} count={}", decision.action, tc.name, decision.code, decision.count)
-                result = ToolResult(
-                    ok=result.ok,
+                result = replace(
+                    result,
                     content=append_toolguard_guidance(result.content, decision),
-                    error=result.error, raw=result.raw,
                 )
         _append_tool_message(result, tool_call_id=tc.id, tool_name=tc.name, history=history, max_chars=item.max_result_chars)
 

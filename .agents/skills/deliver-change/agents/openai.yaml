@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deliver Change"
+  short_description: "Plan, implement, and verify an approved repository change"
+  default_prompt: "Use $deliver-change to plan, implement, and verify this approved repository change."
