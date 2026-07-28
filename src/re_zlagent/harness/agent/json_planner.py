@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import replace
@@ -11,6 +12,10 @@ from typing import Any
 from re_zlagent.harness.model import ModelClient, ModelMessage
 from re_zlagent.harness.runtime import RuntimeToolStep
 from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract
+from re_zlagent.harness.tools import (
+    validate_schema_definition,
+    validate_tool_arguments,
+)
 
 from .planner import AgentPlan, AgentPlanner, AgentRunRequest
 
@@ -28,7 +33,16 @@ class JsonPlanPlanner(AgentPlanner):
         *,
         system_prompt: str | None = None,
         tool_schemas: Sequence[dict[str, Any]] | None = None,
+        max_repair_attempts: int = 1,
+        max_plan_steps: int = 32,
+        max_identical_actions: int = 1,
     ) -> None:
+        if max_repair_attempts < 0 or max_repair_attempts > 2:
+            raise ValueError("max_repair_attempts must be between 0 and 2")
+        if max_plan_steps <= 0:
+            raise ValueError("max_plan_steps must be positive")
+        if max_identical_actions <= 0:
+            raise ValueError("max_identical_actions must be positive")
         self._model = model
         self._system_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
         self._tool_schemas = (
@@ -37,19 +51,50 @@ class JsonPlanPlanner(AgentPlanner):
             else tuple(deepcopy(dict(schema)) for schema in tool_schemas)
         )
         self._tool_names = _tool_names(self._tool_schemas)
+        self._tool_schema_by_name = _tool_schema_map(self._tool_schemas)
+        self._max_repair_attempts = max_repair_attempts
+        self._max_plan_steps = max_plan_steps
+        self._max_identical_actions = max_identical_actions
 
     async def plan(self, request: AgentRunRequest) -> AgentPlan:
-        response = await self._model.complete(
-            (
-                ModelMessage(role="system", content=self._system_prompt),
-                ModelMessage(
-                    role="user",
-                    content=_request_prompt(request, tool_schemas=self._tool_schemas),
-                ),
+        request_prompt = _request_prompt(request, tool_schemas=self._tool_schemas)
+        previous_content: str | None = None
+        previous_error: str | None = None
+        response = None
+        parsed = None
+        completed_attempt = 0
+        for attempt in range(self._max_repair_attempts + 1):
+            completed_attempt = attempt
+            response = await self._model.complete(
+                _planning_messages(
+                    system_prompt=self._system_prompt,
+                    request_prompt=request_prompt,
+                    previous_content=previous_content,
+                    previous_error=previous_error,
+                )
             )
-        )
-        parsed = parse_agent_plan(response.content, fallback_goal=request.user_goal)
-        self._validate_tool_names(parsed)
+            try:
+                parsed = parse_agent_plan(
+                    response.content,
+                    fallback_goal=request.user_goal,
+                )
+                self._validate_plan(parsed)
+                break
+            except (PlanParseError, ValueError) as exc:
+                failure = (
+                    exc
+                    if isinstance(exc, PlanParseError)
+                    else PlanParseError(str(exc))
+                )
+                if attempt >= self._max_repair_attempts:
+                    if isinstance(exc, PlanParseError):
+                        raise
+                    raise failure from exc
+                previous_content = response.content
+                previous_error = str(failure)
+
+        if response is None or parsed is None:  # pragma: no cover - loop is non-empty
+            raise RuntimeError("planner produced no response")
         proposed_contract_id = parsed.contract.id
         contract = replace(
             parsed.contract,
@@ -59,6 +104,8 @@ class JsonPlanPlanner(AgentPlanner):
         metadata = {
             "planner": "json",
             "proposed_contract_id": proposed_contract_id,
+            "plan_attempts": completed_attempt + 1,
+            "repair_attempts": completed_attempt,
             **_provider_metadata(response.raw),
         }
         return AgentPlan(
@@ -67,14 +114,48 @@ class JsonPlanPlanner(AgentPlanner):
             metadata=metadata,
         )
 
-    def _validate_tool_names(self, plan: AgentPlan) -> None:
+    def _validate_plan(self, plan: AgentPlan) -> None:
+        if len(plan.steps) > self._max_plan_steps:
+            raise PlanParseError(
+                f"plan has {len(plan.steps)} steps; maximum is {self._max_plan_steps}"
+            )
         if self._tool_names is None:
+            self._validate_identical_actions(plan)
             return
         unknown = sorted({step.tool_name for step in plan.steps} - self._tool_names)
         if unknown:
             raise PlanParseError(
                 "plan references unavailable tools: " + ", ".join(unknown)
             )
+        for step in plan.steps:
+            schema = self._tool_schema_by_name[step.tool_name]
+            issues = validate_tool_arguments(step.arguments, schema)
+            if issues:
+                raise PlanParseError(
+                    f"step {step.id} arguments do not match {step.tool_name} schema: "
+                    + "; ".join(str(issue) for issue in issues)
+                )
+        self._validate_identical_actions(plan)
+
+    def _validate_identical_actions(self, plan: AgentPlan) -> None:
+        signatures = [_action_signature(step) for step in plan.steps]
+        counts = Counter(signatures)
+        repeated = {
+            signature
+            for signature, count in counts.items()
+            if count > self._max_identical_actions
+        }
+        if not repeated:
+            return
+        step_ids = [
+            step.id
+            for step, signature in zip(plan.steps, signatures, strict=True)
+            if signature in repeated
+        ]
+        raise PlanParseError(
+            "plan repeats an identical tool action beyond the configured limit: "
+            + ", ".join(step_ids)
+        )
 
 
 def parse_agent_plan(text: str, *, fallback_goal: str) -> AgentPlan:
@@ -260,6 +341,37 @@ def _request_prompt(
     )
 
 
+def _planning_messages(
+    *,
+    system_prompt: str,
+    request_prompt: str,
+    previous_content: str | None,
+    previous_error: str | None,
+) -> tuple[ModelMessage, ...]:
+    messages = [
+        ModelMessage(role="system", content=system_prompt),
+        ModelMessage(role="user", content=request_prompt),
+    ]
+    if previous_content is not None and previous_error is not None:
+        messages.extend(
+            (
+                ModelMessage(
+                    role="assistant",
+                    content=previous_content[:12_000],
+                ),
+                ModelMessage(
+                    role="user",
+                    content=(
+                        "The previous plan was rejected by the host validator: "
+                        f"{previous_error}. Correct only the invalid plan fields. "
+                        "Return one complete JSON plan and no prose."
+                    ),
+                ),
+            )
+        )
+    return tuple(messages)
+
+
 def _tool_names(
     schemas: tuple[dict[str, Any], ...] | None,
 ) -> set[str] | None:
@@ -274,6 +386,36 @@ def _tool_names(
             raise ValueError(f"duplicate tool schema name: {name}")
         names.add(name)
     return names
+
+
+def _tool_schema_map(
+    schemas: tuple[dict[str, Any], ...] | None,
+) -> dict[str, dict[str, Any]]:
+    if schemas is None:
+        return {}
+    resolved: dict[str, dict[str, Any]] = {}
+    for item in schemas:
+        name = item.get("name")
+        schema = item.get("input_schema")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("tool schema name must be a non-empty string")
+        if not isinstance(schema, dict):
+            raise ValueError(f"tool {name} input_schema must be an object")
+        try:
+            validate_schema_definition(schema)
+        except ValueError as exc:
+            raise ValueError(f"invalid input schema for tool {name}: {exc}") from exc
+        resolved[name] = deepcopy(schema)
+    return resolved
+
+
+def _action_signature(step: RuntimeToolStep) -> str:
+    return json.dumps(
+        {"arguments": step.arguments, "tool_name": step.tool_name},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _provider_metadata(raw: dict[str, Any]) -> dict[str, Any]:
@@ -297,6 +439,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "items require id and tool_name and may contain arguments, title, "
     "expected_output, verification, depends_on, and required_evidence_refs. "
     "Evidence refs must name deterministic evidence expected from runtime tools. "
+    "Arguments must satisfy each tool input_schema. Do not repeat an identical "
+    "tool action. Keep the plan bounded and include only necessary steps. "
     "Never claim execution evidence, passed tests, user approvals, or freshness. "
     "Use only tools listed in available_tools. A confirmation_required tool may "
     "be planned, but you cannot approve it or set allow_confirm=true. Do not "

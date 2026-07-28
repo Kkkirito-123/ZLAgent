@@ -10,6 +10,7 @@ from typing import Any
 from .base import Tool, ToolExecutionContext, ToolPermission, ToolResult
 from .metadata import RecommendedNextAction, SideEffect, ToolErrorType
 from .permission import PermissionDecision, PermissionPolicy
+from .schema_validation import validate_schema_definition, validate_tool_arguments
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,10 @@ class ToolRegistry:
             raise ValueError(
                 f"outbox-required tool cannot be read-only: {tool.name}"
             )
+        try:
+            validate_schema_definition(tool.input_schema)
+        except ValueError as exc:
+            raise ValueError(f"invalid input schema for tool {tool.name}: {exc}") from exc
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool | None:
@@ -232,6 +237,31 @@ class ToolRegistry:
             normalized_arguments,
         )
         tool = self.get(name)
+        if tool is not None:
+            validation_issues = validate_tool_arguments(
+                normalized_arguments,
+                tool.input_schema,
+            )
+            if validation_issues:
+                return self._rejected_preparation(
+                    name,
+                    normalized_arguments,
+                    invocation_key,
+                    ToolResult.failure(
+                        "tool arguments do not match input schema: "
+                        + "; ".join(str(issue) for issue in validation_issues),
+                        error_type=ToolErrorType.INVALID_INPUT,
+                        recoverable_by_model=True,
+                        recommended_next_action=RecommendedNextAction.RETRY,
+                        raw={
+                            "tool_name": name,
+                            "validation_issues": [
+                                issue.to_dict() for issue in validation_issues
+                            ],
+                        },
+                        source="tool_schema",
+                    ),
+                )
         permission = self._permission_policy.decide_tool_call(
             tool=tool,
             tool_name=name,

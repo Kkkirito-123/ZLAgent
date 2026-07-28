@@ -16,6 +16,11 @@ from .read_before_write import (
     WritePreconditionStatus,
 )
 from .registry import PreparedToolCall, ToolRegistry, ToolSearchResult
+from .schema_validation import (
+    SchemaValidationIssue,
+    validate_schema_definition,
+    validate_tool_arguments,
+)
 
 __all__ = [
     "Evidence",
@@ -26,6 +31,7 @@ __all__ = [
     "ReadBeforeWritePolicy",
     "ReadMark",
     "RecommendedNextAction",
+    "SchemaValidationIssue",
     "SideEffect",
     "Tool",
     "ToolExecutionContext",
@@ -35,6 +41,8 @@ __all__ = [
     "ToolResult",
     "ToolResultStatus",
     "ToolSearchResult",
+    "validate_schema_definition",
+    "validate_tool_arguments",
     "WritePrecondition",
     "WritePreconditionStatus",
 ]

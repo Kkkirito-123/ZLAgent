@@ -95,8 +95,11 @@ Tool boundary:
 - `ToolResult`
 - `ToolRegistry`
 - `ToolSearchResult`
+- `SchemaValidationIssue`
 - `PermissionPolicy`
 - `ReadBeforeWritePolicy`
+- `validate_schema_definition`
+- `validate_tool_arguments`
 
 Workspace file tools:
 
@@ -182,6 +185,11 @@ Agent orchestration:
 - `JsonPlanPlanner`
 - `AgentOrchestrator`
 - `AgentOrchestrator.submit`
+
+`ToolRegistry` enforces the supported input-schema subset before permission and
+side-effect planning. `JsonPlanPlanner` revalidates a complete plan after at
+most one default repair call and rejects oversized or identical repeated actions
+before persistence.
 
 Model:
 

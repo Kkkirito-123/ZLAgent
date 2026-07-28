@@ -178,10 +178,13 @@ app/gateway -> HarnessFacade
 - `evals/` 同时包含版本化 release corpus、语义/恢复/时延门槛
 - `progress/`：任务进度和长任务进度快照
 - `tools/`：工具协议、权限、内置文件/消息/URL 工具
+- `tools/schema_validation.py`：运行时工具参数校验和受支持 schema 边界
 
 ## 5. 关键语义
 
 - `ToolResult` 必须包含 `status`、`error_type`、`recoverable_by_model`、`recommended_next_action`、`source`、`evidence`、`side_effects`。
+- 工具 schema 不只是 prompt 提示。`ToolRegistry` 必须在注册时拒绝运行时不支持的
+  schema 关键字，并在权限判断和副作用规划前执行不带类型强转的参数校验。
 - `TaskEventLog` 必须 append-only，并支持 idempotency key。
 - `Checkpoint` 存储可恢复状态和 failure envelope。
 - `ResumePolicy` 只允许明确可重试的 checkpoint 自动恢复。
@@ -215,6 +218,8 @@ app/gateway -> HarnessFacade
 - `AcceptanceGate` 是任务完成的唯一判定入口。
 - `AgentPlan` 只包含验收要求和 runtime step，不能包含可信验收 facts。
 - 模型规划只能选择 host 提供 schema 的工具；不可用工具和模型授予的 confirm 权限必须拒绝。
+- `JsonPlanPlanner` 默认最多进行一次受控修复调用；修复后的完整计划必须重新校验，
+  并在持久化前限制计划步数和完全相同的重复工具动作。
 - 模型提出的 contract identity 和 goal 在持久化前必须重新绑定到可信 host request。
 - `OpenAICompatibleModelConfig` 只保存非密钥设置，并从明确命名的环境变量解析 API key。
 - `RuntimeAcceptanceFacts` 只能由受信 host/runtime 或 verifier 边界构造，planner 和模型输出不能提供。

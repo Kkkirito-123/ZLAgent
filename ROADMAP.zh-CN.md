@@ -364,6 +364,12 @@ adapter 提供 submit、status、work、approval 和 result；OpenAI-compatible 
 和 package dry-run；根目录 `.github/workflows/quality.yml` 在 Python 3.11 与
 3.13 运行同一命令。
 
+**当前加固证据：** host 已在权限判断和副作用规划前强制校验工具输入 schema；
+运行时不支持的 schema 关键字会在注册阶段失败；参数不合法的模型计划默认最多进行
+一次受控修复；超长计划和完全相同的重复动作会在持久化前失败。聚焦 planner/tool
+测试、316 项完整测试、对 83 个源码文件执行的 mypy，以及 6/6 release benchmark
+均在本地通过，统一质量命令也已通过；本次修正在当前分支中为 `LANDED`。
+
 ### M19 - 受控可选能力迁移
 
 **状态：** `DEFERRED`

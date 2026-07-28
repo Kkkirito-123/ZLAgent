@@ -158,8 +158,11 @@ src/re_zlagent/harness/tools/
   ToolResult
   ToolRegistry
   ToolSearchResult
+  SchemaValidationIssue
   PermissionPolicy
   ReadBeforeWritePolicy
+  validate_schema_definition
+  validate_tool_arguments
 
 src/re_zlagent/harness/tools/builtins/
   ReadFileTool
@@ -286,6 +289,9 @@ src/re_zlagent/harness/progress/
 Important semantics:
 
 - Tool output must include structured metadata: `status`, `error_type`, `recoverable_by_model`, `recommended_next_action`, `source`, `evidence`, `side_effects`.
+- Tool schemas are runtime contracts, not prompt hints only. `ToolRegistry`
+  rejects unsupported schema keywords at registration and validates arguments
+  without coercion before permission or side-effect planning.
 - Tool discovery must stay read-only and expose capability boundaries without executing tools.
 - Mutation tools that edit existing files require read-before-write.
 - `SendMessageTool` is confirm-tier and records message side effects; it depends on a harness `MessageSender` protocol, not `gateway`.
@@ -353,6 +359,9 @@ Important semantics:
 - Resumed runs must pass `AcceptanceGate`; a successful retry is not completion by itself.
 - `AgentPlanner` produces contracts and runtime steps; it must not execute tools directly.
 - `JsonPlanPlanner` accepts strict JSON plans and validates them into `AgentPlan`.
+- `JsonPlanPlanner` may make at most one default repair call after host validation
+  rejects a plan. Repair attempts, plan length, and identical action repetition
+  are bounded before a plan is persisted.
 - Model planning is restricted to host-provided tool schemas; unavailable tools and model-granted confirm authority are rejected.
 - Model-proposed contract identity and goal are rebound to the trusted host request before persistence.
 - `OpenAICompatibleModelClient` is a thin provider adapter with injectable transport and no hard third-party dependency.
@@ -487,6 +496,9 @@ find src tests -maxdepth 5 -type f | sort
 
 When touching tools, also verify:
 
+- unsupported tool schemas fail at registration instead of being ignored
+- missing, mistyped, out-of-range, enum-invalid, and extra arguments are rejected
+  before tool execution and side-effect planning
 - permission allow/confirm/deny paths
 - read-only tool discovery and confirm-tool filtering
 - evidence and side effect metadata
@@ -559,6 +571,9 @@ When touching agent orchestration, also verify:
 
 When touching model/planner code, also verify:
 
+- schema-invalid tool arguments receive only the configured bounded repair calls
+- repaired plans are fully revalidated and record their attempt count
+- oversized plans and repeated identical tool actions are rejected before storage
 - invalid JSON is rejected
 - missing required contract fields are rejected
 - unknown criterion types are rejected

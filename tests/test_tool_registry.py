@@ -43,6 +43,11 @@ class ConfirmWriteTool(Tool):
     side_effects = ("filesystem",)
     outbox_required = True
     side_effect_retry_safe = True
+    input_schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
 
     def plan_side_effects(
         self,
@@ -81,6 +86,28 @@ class BrokenTool(Tool):
 
     async def execute(self, arguments: dict[str, object]) -> ToolResult:
         raise RuntimeError("boom")
+
+
+class BoundedTool(Tool):
+    name = "bounded"
+    permission = ToolPermission.SAFE
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer", "minimum": 1, "maximum": 3},
+            "mode": {"type": "string", "enum": ["fast", "safe"]},
+        },
+        "required": ["count", "mode"],
+        "additionalProperties": False,
+    }
+
+    async def execute(self, arguments: dict[str, object]) -> ToolResult:
+        return ToolResult.success("bounded", source=self.name)
+
+
+class InvalidSchemaTool(Tool):
+    name = "invalid_schema"
+    input_schema = {"type": "object", "unsupported": True}
 
 
 class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
@@ -134,6 +161,12 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             registry.register(EchoTool())
 
+    def test_register_rejects_schema_keywords_runtime_cannot_enforce(self) -> None:
+        registry = ToolRegistry()
+
+        with self.assertRaisesRegex(ValueError, "unsupported schema keywords"):
+            registry.register(InvalidSchemaTool())
+
     async def test_execute_safe_tool(self) -> None:
         registry = ToolRegistry()
         registry.register(EchoTool())
@@ -143,6 +176,39 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.content, "hello")
         self.assertEqual(result.source, "echo")
+
+    async def test_execute_rejects_missing_required_argument_before_tool(self) -> None:
+        registry = ToolRegistry()
+        registry.register(EchoTool())
+
+        result = await registry.execute("echo", {})
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_type, ToolErrorType.INVALID_INPUT)
+        self.assertTrue(result.recoverable_by_model)
+        self.assertEqual(result.source, "tool_schema")
+        self.assertIn("$.text", result.error or "")
+        self.assertEqual(
+            result.raw["validation_issues"][0]["path"],  # type: ignore[index]
+            "$.text",
+        )
+
+    async def test_execute_rejects_types_bounds_enum_and_extra_fields(self) -> None:
+        registry = ToolRegistry()
+        registry.register(BoundedTool())
+
+        result = await registry.execute(
+            "bounded",
+            {"count": True, "mode": "turbo", "extra": 1},
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_type, ToolErrorType.INVALID_INPUT)
+        paths = {
+            item["path"]
+            for item in result.raw["validation_issues"]  # type: ignore[index, union-attr]
+        }
+        self.assertEqual(paths, {"$.count", "$.mode", "$.extra"})
 
     async def test_execute_unknown_tool_is_denied(self) -> None:
         registry = ToolRegistry()
@@ -167,6 +233,15 @@ class ToolRegistryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(allowed.ok)
         self.assertEqual(allowed.side_effects[0].target, "/tmp/a.txt")
+
+    async def test_invalid_confirm_arguments_fail_before_approval_request(self) -> None:
+        registry = ToolRegistry()
+        registry.register(ConfirmWriteTool())
+
+        result = await registry.execute("write_note", {"path": 3})
+
+        self.assertEqual(result.error_type, ToolErrorType.INVALID_INPUT)
+        self.assertNotEqual(result.status, ToolResultStatus.REQUIRES_CONFIRMATION)
 
     async def test_tool_exception_is_normalized(self) -> None:
         registry = ToolRegistry()

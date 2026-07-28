@@ -445,6 +445,14 @@ check runs 308 tests, benchmark, compileall, Ruff, mypy over 82 source files, CL
 smoke checks, and package dry-run; the workflow runs the same command on Python
 3.11 and 3.13 from `.github/workflows/quality.yml` in the canonical root layout.
 
+**Current hardening evidence:** tool input schemas are now enforced by the host
+before permission and side-effect planning; unsupported schema keywords fail at
+registration; schema-invalid model plans receive at most one default repair
+call; oversized plans and repeated identical actions fail before persistence.
+The focused planner/tool tests, 316-test suite, mypy over 83 source files, and
+the 6/6 release benchmark pass locally. The unified quality command also passes;
+this correction is `LANDED` in the current branch.
+
 ### M19 - Controlled optional capability migration
 
 **Status:** `DEFERRED`

@@ -94,8 +94,11 @@ namespace，但仓库本身已经提升到根目录。
 - `ToolResult`
 - `ToolRegistry`
 - `ToolSearchResult`
+- `SchemaValidationIssue`
 - `PermissionPolicy`
 - `ReadBeforeWritePolicy`
+- `validate_schema_definition`
+- `validate_tool_arguments`
 - `ReadFileTool`
 - `WriteFileTool`
 - `SendMessageTool`
@@ -155,6 +158,10 @@ namespace，但仓库本身已经提升到根目录。
 - `JsonPlanPlanner`
 - `AgentOrchestrator`
 - `AgentOrchestrator.submit`
+
+`ToolRegistry` 会在权限判断和副作用规划前强制执行受支持的输入 schema 子集。
+`JsonPlanPlanner` 默认最多进行一次受控修复，并重新校验完整计划；超长计划和完全
+相同的重复工具动作会在持久化前失败。
 - `OpenAICompatibleModelClient`
 - `OpenAICompatibleModelConfig`
 - `MemoryManager`

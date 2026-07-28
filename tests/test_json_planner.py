@@ -30,6 +30,18 @@ class FakeModel:
         return ModelResponse(content=self.content, raw=self.raw)
 
 
+class SequenceModel:
+    def __init__(self, *contents: str) -> None:
+        self._contents = list(contents)
+        self.calls: list[tuple[ModelMessage, ...]] = []
+
+    async def complete(self, messages: tuple[ModelMessage, ...]) -> ModelResponse:
+        self.calls.append(messages)
+        if not self._contents:
+            raise AssertionError("planner exceeded the supplied model responses")
+        return ModelResponse(content=self._contents.pop(0))
+
+
 def _plan_json(**overrides) -> str:
     data = {
         "contract": {
@@ -94,6 +106,116 @@ class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.messages[1].role, "user")
         self.assertIn('"channel": "cli"', model.messages[1].content)
         self.assertIn('"name": "read_file"', model.messages[1].content)
+
+    async def test_planner_repairs_schema_invalid_arguments_once(self) -> None:
+        invalid = json.loads(_plan_json())
+        invalid["steps"][0]["arguments"] = {"path": 3}
+        model = SequenceModel(json.dumps(invalid), _plan_json())
+        planner = JsonPlanPlanner(
+            model,
+            tool_schemas=[
+                {
+                    "name": "read_file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                }
+            ],
+        )
+
+        plan = await planner.plan(
+            AgentRunRequest(run_id="run-1", user_goal="ship plan")
+        )
+
+        self.assertEqual(plan.steps[0].arguments, {"path": "README.md"})
+        self.assertEqual(plan.metadata["plan_attempts"], 2)
+        self.assertEqual(plan.metadata["repair_attempts"], 1)
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(
+            tuple(message.role for message in model.calls[1]),
+            ("system", "user", "assistant", "user"),
+        )
+        self.assertIn("$.path", model.calls[1][-1].content)
+
+    async def test_planner_stops_after_bounded_repair_attempt(self) -> None:
+        invalid = json.loads(_plan_json())
+        invalid["steps"][0]["arguments"] = {}
+        bad_plan = json.dumps(invalid)
+        model = SequenceModel(bad_plan, bad_plan)
+        planner = JsonPlanPlanner(
+            model,
+            tool_schemas=[
+                {
+                    "name": "read_file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                }
+            ],
+            max_repair_attempts=1,
+        )
+
+        with self.assertRaisesRegex(PlanParseError, "required property"):
+            await planner.plan(
+                AgentRunRequest(run_id="run-1", user_goal="ship plan")
+            )
+
+        self.assertEqual(len(model.calls), 2)
+
+    async def test_planner_rejects_identical_repeated_actions(self) -> None:
+        repeated = json.loads(_plan_json())
+        repeated["steps"].append(
+            {
+                "id": "step-2",
+                "tool_name": "read_file",
+                "arguments": {"path": "README.md"},
+            }
+        )
+        planner = JsonPlanPlanner(
+            FakeModel(json.dumps(repeated)),
+            tool_schemas=[
+                {
+                    "name": "read_file",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+            max_repair_attempts=0,
+        )
+
+        with self.assertRaisesRegex(PlanParseError, "identical tool action"):
+            await planner.plan(
+                AgentRunRequest(run_id="run-1", user_goal="ship plan")
+            )
+
+    async def test_planner_rejects_plan_above_step_limit(self) -> None:
+        oversized = json.loads(_plan_json())
+        oversized["steps"].append(
+            {
+                "id": "step-2",
+                "tool_name": "read_file",
+                "arguments": {"path": "CLAUDE.md"},
+            }
+        )
+        planner = JsonPlanPlanner(
+            FakeModel(json.dumps(oversized)),
+            tool_schemas=[
+                {
+                    "name": "read_file",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+            max_repair_attempts=0,
+            max_plan_steps=1,
+        )
+
+        with self.assertRaisesRegex(PlanParseError, "maximum is 1"):
+            await planner.plan(
+                AgentRunRequest(run_id="run-1", user_goal="ship plan")
+            )
 
     async def test_planner_rejects_tool_outside_host_schema(self) -> None:
         model = FakeModel(_plan_json())
