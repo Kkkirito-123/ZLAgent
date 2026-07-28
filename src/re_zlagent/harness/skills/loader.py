@@ -33,11 +33,19 @@ class FileSystemSkillLoader:
         if self._root.exists() and not self._root.is_dir():
             raise SkillLoadError(f"skills path is not a directory: {self._root}")
 
+    @property
+    def root(self) -> Path:
+        """Return the configured managed skill root."""
+
+        return self._root
+
     def load(self) -> dict[str, SkillManifest]:
-        self._skills.clear()
         if not self._root.exists():
+            self._skills = {}
             return {}
-        self._scan(self._root, depth=0)
+        loaded: dict[str, SkillManifest] = {}
+        self._scan(self._root, depth=0, loaded=loaded)
+        self._skills = loaded
         return dict(self._skills)
 
     def list(self) -> tuple[SkillManifest, ...]:
@@ -63,19 +71,25 @@ class FileSystemSkillLoader:
             return None
         return self._guard.scan(body)
 
-    def _scan(self, folder: Path, *, depth: int) -> None:
+    def _scan(
+        self,
+        folder: Path,
+        *,
+        depth: int,
+        loaded: dict[str, SkillManifest],
+    ) -> None:
         folder = self._resolve_inside_root(folder)
         manifest = self._load_one(folder)
         if manifest is not None:
-            if manifest.id in self._skills:
+            if manifest.id in loaded:
                 raise SkillLoadError(f"duplicate skill id: {manifest.id}")
-            self._skills[manifest.id] = manifest
+            loaded[manifest.id] = manifest
             return
         if depth >= self._max_depth:
             return
         for child in sorted(folder.iterdir()):
             if child.is_dir():
-                self._scan(child, depth=depth + 1)
+                self._scan(child, depth=depth + 1, loaded=loaded)
 
     def _load_one(self, folder: Path) -> SkillManifest | None:
         skill_md = folder / "SKILL.md"

@@ -85,6 +85,29 @@ class SkillLoaderTests(unittest.TestCase):
             with self.assertRaises(SkillLoadError):
                 FileSystemSkillLoader(root).load()
 
+    def test_failed_reload_preserves_last_valid_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "first"
+            first.mkdir()
+            (first / "SKILL.md").write_text(
+                "---\nid: stable\nname: Stable\n---\nBody\n",
+                encoding="utf-8",
+            )
+            loader = FileSystemSkillLoader(root)
+            loader.load()
+            duplicate = root / "duplicate"
+            duplicate.mkdir()
+            (duplicate / "SKILL.md").write_text(
+                "---\nid: stable\nname: Duplicate\n---\nBody\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(SkillLoadError):
+                loader.load()
+
+            self.assertEqual([item.id for item in loader.list()], ["stable"])
+
     def test_symlink_escape_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

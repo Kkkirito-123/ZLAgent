@@ -10,6 +10,7 @@ from re_zlagent.harness.agent import AgentOrchestrator, AgentPlanner, JsonPlanPl
 from re_zlagent.harness.model import ModelClient
 from re_zlagent.harness.progress import TaskProgressReader
 from re_zlagent.harness.runtime import HarnessRuntime
+from re_zlagent.harness.skills import FileSystemSkillLoader, LocalSkillInstaller
 from re_zlagent.harness.storage import (
     InMemoryLongTaskStore,
     InMemoryTaskStore,
@@ -19,7 +20,7 @@ from re_zlagent.harness.storage import (
     TaskStore,
 )
 from re_zlagent.harness.tools import ToolRegistry
-from re_zlagent.harness.tools.builtins import create_file_tools
+from re_zlagent.harness.tools.builtins import InstallSkillTool, create_file_tools
 
 from .application import AgentApplication
 from .operator import ApprovalService, OperatorService
@@ -32,12 +33,22 @@ class ApplicationBootstrapConfig:
     workspace_dir: Path | None = None
     sqlite_path: Path | None = None
     register_file_tools: bool = True
+    skill_import_dir: Path | None = None
+    skills_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.workspace_dir is not None:
             object.__setattr__(self, "workspace_dir", Path(self.workspace_dir))
         if self.sqlite_path is not None:
             object.__setattr__(self, "sqlite_path", Path(self.sqlite_path))
+        if self.skill_import_dir is not None:
+            object.__setattr__(self, "skill_import_dir", Path(self.skill_import_dir))
+        if self.skills_dir is not None:
+            object.__setattr__(self, "skills_dir", Path(self.skills_dir))
+        if (self.skill_import_dir is None) != (self.skills_dir is None):
+            raise ValueError(
+                "skill_import_dir and skills_dir must be configured together"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +162,16 @@ def build_application_runtime(
     if cfg.register_file_tools and cfg.workspace_dir is not None:
         for tool in create_file_tools(cfg.workspace_dir):
             tools.register(tool)
+    skill_loader: FileSystemSkillLoader | None = None
+    if cfg.skill_import_dir is not None and cfg.skills_dir is not None:
+        skill_loader = FileSystemSkillLoader(cfg.skills_dir)
+        skill_loader.load()
+        installer = LocalSkillInstaller(
+            cfg.skill_import_dir,
+            cfg.skills_dir,
+            loader=skill_loader,
+        )
+        tools.register(InstallSkillTool(installer))
 
     runtime = HarnessRuntime(
         store=resolved_store,
@@ -162,6 +183,7 @@ def build_application_runtime(
     progress_reader = TaskProgressReader(resolved_store)
     facade = build_harness_facade(
         tool_registry=tools,
+        skill_loader=skill_loader,
         task_store=resolved_store,
         progress_reader=progress_reader,
     )

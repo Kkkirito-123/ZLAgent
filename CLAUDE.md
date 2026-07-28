@@ -169,6 +169,7 @@ src/re_zlagent/harness/tools/builtins/
   WriteFileTool
   SendMessageTool
   ReadUrlTool
+  InstallSkillTool
 
 src/re_zlagent/harness/sandbox/
   WorkspacePathPolicy
@@ -256,6 +257,8 @@ src/re_zlagent/harness/skills/
   SkillManifest
   FileSystemSkillLoader
   SkillGuard
+  LocalSkillInstaller
+  SkillInstallResult
   scan_skill_text
 
 src/re_zlagent/harness/observability/
@@ -382,6 +385,10 @@ Important semantics:
 - `MemoryManager` builds fenced memory context and strips fake memory-context tags from untrusted text.
 - `FileSystemSkillLoader` reads Hermes `SKILL.md` and legacy `skill.yaml + instructions.md`.
 - `SkillGuard` statically classifies safe, caution, and dangerous skill text.
+- `LocalSkillInstaller` accepts only bounded local packages, refuses overwrite
+  conflicts, and treats byte-identical packages as idempotent replays.
+- `InstallSkillTool` is confirm-tier and must execute through durable outbox
+  intent; it never downloads, executes, updates, or deletes a Skill.
 - `TraceRecorder` records observability facts only; it must not decide runtime completion.
 - Trace metadata is redacted before storage.
 - `DoctorRunner` aggregates explicit diagnostics; failed checks become data, not crashes.
@@ -468,7 +475,8 @@ Treat these as high-risk:
 - `src/re_zlagent/harness/agent/`: planner boundary and orchestration path into runtime.
 - `src/re_zlagent/harness/model/`: model provider boundary and strict response contracts.
 - `src/re_zlagent/harness/memory/`: durable memory categories, versioned mutations, prompt-context fencing.
-- `src/re_zlagent/harness/skills/`: read-only skill loading, path safety, duplicate detection, static safety scanning.
+- `src/re_zlagent/harness/skills/`: read-only loading plus controlled local
+  installation, path safety, duplicate/conflict detection, and static scanning.
 - `src/re_zlagent/harness/observability/`: trace spans, trace events, metadata redaction, diagnostics foundations.
 - `src/re_zlagent/harness/evals/`: benchmark expectations and realtime health snapshots; no completion authority.
 - `src/re_zlagent/harness/progress/`: read-only progress snapshots from task runs, events, and checkpoints.
@@ -600,6 +608,11 @@ When touching skills, also verify:
 - symlink/path escapes are rejected
 - dangerous skill text is detected
 - disabled guard does not block test fixtures
+- local installation requires confirmation and a durable filesystem intent
+- package limits, manifest id mismatch, symlinks, and path escapes fail closed
+- the candidate source must stay byte-stable across manifest validation
+- byte-identical replay succeeds while different existing content is preserved
+- a dispatch crash retries without creating a duplicate installed Skill
 
 When touching observability, also verify:
 

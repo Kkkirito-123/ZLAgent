@@ -136,7 +136,8 @@ Every stage must preserve these invariants:
 | M16 | `LANDED` | Add durable worker claiming, leases, heartbeat, and retry budgets. |
 | M17 | `LANDED` | Deliver a real task submission and execution MVP. |
 | M18 | `LANDED` | Add CI, benchmarks, fault injection, and latency/reliability gates. |
-| M19 | `DEFERRED` | Migrate selected optional capabilities one bounded slice at a time. |
+| M19-SKILLS | `LANDED` | Add controlled local, non-overwriting Skill installation. |
+| M19 | `DEFERRED` | Migrate any further optional capability one bounded slice at a time. |
 | M20 | `DEFERRED` | Enable safe DAG concurrency after all prerequisite gates pass. |
 | M21 | `LANDED` | Promote the rebuild to root and close the approved legacy migration. |
 
@@ -464,6 +465,27 @@ Each capability is a separate approved slice with its own boundary tests. The
 candidate order is durable memory, skill lifecycle, MCP, cron/scheduled jobs, and
 OpenGUI. The stage must never land them as one combined refactor.
 
+**Approved slice M19-SKILLS (`LANDED`):** controlled local Skill installation is
+available when the host configures separate import and managed roots. The
+confirm-tier tool validates a root manifest, package limits, symlinks, path
+containment, manifest identity, and static guard findings before an atomic
+non-overwriting install. It declares a deterministic filesystem intent, runs
+through the durable outbox, returns structured evidence, refreshes read-only
+inventory, and treats byte-identical content as an idempotent crash replay.
+
+**M19-SKILLS non-scope:** network or repository download, Skill execution,
+curation, update, delete, dependency installation, MCP, and remote registries.
+Those capabilities remain deferred and require separate approval. The M19 stage
+status remains `DEFERRED` because no further optional slice becomes active
+automatically after this bounded delivery.
+
+**M19-SKILLS evidence:** focused tests cover Hermes and legacy packages,
+approval, structured evidence, path/symlink rejection, manifest/source stability,
+dangerous text, package limits, conflict preservation, identical replay,
+inventory refresh, and dispatch-crash recovery. The unified quality gate passes
+328 tests, the 6/6 release benchmark, compileall, Ruff, mypy over 85 source
+files, CLI smoke checks, and package dry-run locally.
+
 Wiki, Graph-RAG, and geo are `REMOVED` from the current target. Reopening them
 requires a new product decision and roadmap change.
 
@@ -559,7 +581,7 @@ boundaries; it does not mean the capability has already been migrated.
 | concrete Weixin, WeCom and Webhook gateways | `DEFERRED` | only normalized gateway contracts and local CLI exist; deletion removes live IM entry points | product decision before deletion |
 | FastAPI routes and deployment wrappers | `DEFERRED` | no HTTP product server is in the current MVP | product decision before deletion |
 | durable memory and retrieval | `DEFERRED` | versioned in-memory boundary exists; durable provider/retrieval is not migrated | M19, user/product owner |
-| skill curator, consolidation, review and usage lifecycle | `DEFERRED` | read-only loader and guard exist; mutation lifecycle is not migrated | M19, user/product owner |
+| skill curator, consolidation, review and usage lifecycle | `DEFERRED` | controlled local non-overwriting install is landed; curation, update, delete, execution and usage lifecycle remain deferred | M19, user/product owner |
 | MCP install, transport and dynamic tool lifecycle | `DEFERRED` | requires a separate permission/credential/outbox slice | M19, user/product owner |
 | cron and scheduled delivery | `DEFERRED` | requires durable scheduler ownership and delivery semantics | M19, user/product owner |
 | OpenGUI and Android execution | `DEFERRED` | explicitly excluded from the core rebuild | M19, user/product owner |

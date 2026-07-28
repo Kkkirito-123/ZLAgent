@@ -167,6 +167,8 @@ namespace，但仓库本身已经提升到根目录。
 - `MemoryManager`
 - `FileSystemSkillLoader`
 - `SkillGuard`
+- `LocalSkillInstaller`
+- `InstallSkillTool`
 
 ### Observability / Evals / Progress
 
@@ -195,7 +197,8 @@ M15     LANDED   崩溃安全 side-effect outbox
 M16     LANDED   持久 worker 所有权和重试预算
 M17     LANDED   真实任务提交与执行 MVP
 M18     LANDED   可靠性和发布门槛
-M19-M20 DEFERRED 可选迁移和安全 DAG 并发
+M19-SKILLS LANDED 受控本地且不覆盖的 Skill 安装
+M19-M20 DEFERRED 后续可选迁移和安全 DAG 并发
 M21     LANDED   根目录提升与旧迁移关闭已通过全新 checkout 验证
 ```
 
@@ -244,6 +247,23 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
   --sqlite .zlagent/tasks.sqlite --workspace . \
   approve run-001 --resume-token RESUME_TOKEN --feedback "批准"
 ```
+
+受控本地 Skill 安装需要显式启用。创建彼此独立的导入目录和托管目录，把一个
+Hermes `SKILL.md` 或 legacy 包放入导入目录，并在可能规划或执行 `install_skill`
+的每个 `submit`、`work`、`approve` 进程中同时传入两个目录：
+
+```bash
+mkdir -p .zlagent/skill-imports .zlagent/skills
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --skill-import-dir .zlagent/skill-imports \
+  --skills-dir .zlagent/skills \
+  submit run-skill-001 "安装本地 demo Skill"
+```
+
+`source_path` 始终相对于配置好的导入目录。安装必须显式批准，会阻断符号链接、
+路径逃逸和危险文本，也绝不覆盖不同内容。网络下载、Skill 执行、更新、删除、
+依赖安装和 MCP 不属于本切片。
 
 读取持久输出和验收事实，不会重新执行任务：
 
@@ -324,7 +344,8 @@ PYTHONPATH=src python -m re_zlagent.check --pretty
 核心迁移已经关闭。后续产品工作必须先形成明确路线图决策：M19 负责独立可选能力
 切片，M20 负责安全 DAG 并发。不得从恢复标签整体搬回任何 deferred 能力。
 
-Wiki、Graph-RAG 和 geo 已从当前目标中移除。MCP、cron、OpenGUI 和 DAG 并发明确延后。
+M19-SKILLS 当前只提供受控本地且不覆盖的安装。Wiki、Graph-RAG 和 geo 已从当前
+目标中移除；MCP、Skill 下载/更新/删除/执行、cron、OpenGUI 和 DAG 并发仍明确延后。
 
 ## 重要边界
 

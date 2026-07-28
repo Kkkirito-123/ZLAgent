@@ -112,7 +112,8 @@
 | M16 | `LANDED` | 增加持久 worker 领取、lease、heartbeat 和重试预算。 |
 | M17 | `LANDED` | 交付真实任务提交与执行 MVP。 |
 | M18 | `LANDED` | 增加 CI、benchmark、故障注入和时延/可靠性门槛。 |
-| M19 | `DEFERRED` | 按独立切片迁移经过选择的可选能力。 |
+| M19-SKILLS | `LANDED` | 增加受控本地且不覆盖的 Skill 安装。 |
+| M19 | `DEFERRED` | 后续可选能力仍需逐个独立切片迁移。 |
 | M20 | `DEFERRED` | 所有前置门槛通过后启用安全 DAG 并发。 |
 | M21 | `LANDED` | 把重构提升到根目录并关闭已批准的旧迁移。 |
 
@@ -378,6 +379,21 @@ adapter 提供 submit、status、work、approval 和 result；OpenAI-compatible 
 
 每项能力都必须是单独批准的切片，并拥有自己的边界测试。候选顺序为 durable memory、skill lifecycle、MCP、cron/scheduled jobs 和 OpenGUI。禁止在一次重构中全部引入。
 
+**已批准切片 M19-SKILLS（`LANDED`）：** 当 host 配置彼此独立的导入目录和托管
+目录后，可以受控安装本地 Skill。confirm-tier 工具会在原子且不覆盖的安装前校验
+根 manifest、包限制、符号链接、路径边界、manifest id 和静态安全扫描；它声明
+确定性的文件系统 intent，通过 durable outbox 执行，返回结构化证据，刷新只读
+inventory，并把字节完全相同的内容当作崩溃恢复时的幂等重放。
+
+**M19-SKILLS 不做：** 网络或仓库下载、Skill 执行、curation、更新、删除、依赖安装、
+MCP 和远程 registry。这些能力仍然延后，必须分别批准。M19 的阶段状态仍为
+`DEFERRED`，因为完成这一受限切片后不会自动激活其他可选能力。
+
+**M19-SKILLS 证据：** 聚焦测试覆盖 Hermes 和 legacy 包、显式批准、结构化证据、
+路径/符号链接拒绝、manifest/来源稳定性、危险文本、包限制、冲突保留、相同内容重放、
+inventory 刷新和 dispatch 崩溃恢复。本地统一质量门槛通过 328 项测试、6/6 release
+benchmark、compileall、Ruff、对 85 个源码文件执行的 mypy、CLI smoke 和包 dry-run。
+
 Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成新的产品决策并修改路线图。
 
 ### M20 - 安全 DAG 并发
@@ -460,7 +476,7 @@ M21 因此满足退出门槛。当前没有自动开始的下一阶段；M19 或
 | 微信、企业微信、Webhook 具体 gateway | `DEFERRED` | 当前只有标准 gateway contract 和本地 CLI；删除会移除在线 IM 入口 | 删除前产品决策 |
 | FastAPI route 和部署脚本 | `DEFERRED` | 当前 MVP 没有 HTTP 产品服务 | 删除前产品决策 |
 | durable memory 和 retrieval | `DEFERRED` | 已有 versioned in-memory 边界；durable provider/retrieval 未迁移 | M19，用户/产品负责人 |
-| skill curator、consolidation、review、usage 生命周期 | `DEFERRED` | 已有只读 loader/guard；修改生命周期未迁移 | M19，用户/产品负责人 |
+| skill curator、consolidation、review、usage 生命周期 | `DEFERRED` | 受控本地且不覆盖的安装已落地；curation、更新、删除、执行和 usage 生命周期仍延后 | M19，用户/产品负责人 |
 | MCP 安装、transport、动态工具生命周期 | `DEFERRED` | 需要独立 permission/credential/outbox 切片 | M19，用户/产品负责人 |
 | cron 和定时发送 | `DEFERRED` | 需要 durable scheduler ownership 和 delivery 语义 | M19，用户/产品负责人 |
 | OpenGUI 和 Android 执行 | `DEFERRED` | 已明确排除在核心重构之外 | M19，用户/产品负责人 |

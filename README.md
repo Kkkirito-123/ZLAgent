@@ -213,6 +213,8 @@ Skills:
 - `SkillManifest`
 - `FileSystemSkillLoader`
 - `SkillGuard`
+- `LocalSkillInstaller`
+- `InstallSkillTool`
 - `scan_skill_text`
 
 Observability:
@@ -260,7 +262,8 @@ M15     LANDED   crash-safe side-effect outbox
 M16     LANDED   durable worker ownership and retry budgets
 M17     LANDED   real task submission and execution MVP
 M18     LANDED   reliability and release gates
-M19-M20 DEFERRED optional migrations and safe DAG concurrency
+M19-SKILLS LANDED controlled local non-overwriting Skill installation
+M19-M20 DEFERRED further optional migrations and safe DAG concurrency
 M21     LANDED   root promotion and legacy closure verified from a clean checkout
 ```
 
@@ -311,6 +314,25 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
   --sqlite .zlagent/tasks.sqlite --workspace . \
   approve run-001 --resume-token RESUME_TOKEN --feedback "approved"
 ```
+
+Controlled local Skill installation is opt-in. Create separate import and
+managed roots, put one Hermes `SKILL.md` or legacy package under the import root,
+and pass both roots to every `submit`, `work`, or `approve` process that may plan
+or execute `install_skill`:
+
+```bash
+mkdir -p .zlagent/skill-imports .zlagent/skills
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --skill-import-dir .zlagent/skill-imports \
+  --skills-dir .zlagent/skills \
+  submit run-skill-001 "Install the local demo Skill"
+```
+
+`source_path` is always relative to the configured import root. Installation
+requires explicit approval, blocks symlinks/path escapes/dangerous text, and
+never overwrites different content. Network download, Skill execution, update,
+delete, dependency installation, and MCP are outside this slice.
 
 Read persisted outputs and acceptance truth without re-executing the task:
 
@@ -392,8 +414,10 @@ claimable work, with `--max-ticks` preventing an unbounded foreground loop.
 - App bootstrap containers should be closed when they own durable adapters.
 - Durable memory mutations require observed versions.
 - Memory context injected into prompts is fenced and sanitized.
-- Skills are loaded read-only from bounded directories.
-- Dangerous skill text is detected before future write paths are added.
+- Skill inventory is loaded read-only from a bounded managed directory.
+- The only Skill mutation path is a confirm-tier controlled local install through
+  deterministic outbox intent; dangerous packages and overwrite conflicts fail
+  closed, while identical content is an idempotent replay.
 - Trace metadata is redacted before storage.
 - Doctor reports and support bundles are redacted by default.
 - Observability records facts, not completion decisions.
@@ -466,7 +490,7 @@ Current tests cover:
 - model JSON planner
 - OpenAI-compatible model adapter
 - memory store and prompt context
-- skill loader and guard
+- skill loader, guard, controlled install, and outbox replay
 - observability trace recorder
 - doctor and support bundle
 - harness doctor readiness check
@@ -488,8 +512,10 @@ roadmap decision: M19 owns bounded optional capability slices and M20 owns safe
 DAG concurrency. No deferred capability should be restored wholesale from the
 legacy tag.
 
-Wiki, Graph-RAG, and geo are removed from the current target. MCP, cron, OpenGUI,
-and DAG concurrency are explicitly deferred.
+M19-SKILLS now provides only controlled local non-overwriting installation.
+Wiki, Graph-RAG, and geo are removed from the current target. MCP, Skill
+download/update/delete/execution, cron, OpenGUI, and DAG concurrency remain
+explicitly deferred.
 
 ## Package And CLI Smoke Checks
 

@@ -59,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Workspace root exposed to bounded file tools.",
     )
     parser.add_argument(
+        "--skill-import-dir",
+        help="Controlled local root containing candidate Skill packages.",
+    )
+    parser.add_argument(
+        "--skills-dir",
+        help="Managed installed-Skill root; requires --skill-import-dir.",
+    )
+    parser.add_argument(
         "--pretty",
         action="store_true",
         help="Pretty-print JSON output.",
@@ -214,6 +222,10 @@ async def _run_command(
         workspace_dir=(Path(args.workspace) if args.workspace else None),
         sqlite_path=sqlite_path,
         register_file_tools=bool(args.workspace),
+        skill_import_dir=(
+            Path(args.skill_import_dir) if args.skill_import_dir else None
+        ),
+        skills_dir=Path(args.skills_dir) if args.skills_dir else None,
     )
     command = str(args.command)
     if command == "submit":

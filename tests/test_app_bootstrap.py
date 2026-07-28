@@ -122,6 +122,47 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(len(events), 1)
 
+    async def test_bootstrap_registers_controlled_skill_installation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            imports = root / "imports"
+            managed = root / "skills"
+            candidate = imports / "demo"
+            candidate.mkdir(parents=True)
+            managed.mkdir()
+            (candidate / "SKILL.md").write_text(
+                "---\nid: demo\nname: Demo\n---\nUse evidence.\n",
+                encoding="utf-8",
+            )
+            container = build_application_container(
+                planner=StaticAgentPlanner(self._plan()),
+                tool_registry=self._registry(),
+                config=ApplicationBootstrapConfig(
+                    register_file_tools=False,
+                    skill_import_dir=imports,
+                    skills_dir=managed,
+                ),
+            )
+
+            before = container.facade.inventory().to_dict()
+            result = await container.tools.execute(
+                "install_skill",
+                {"source_path": "demo", "skill_id": "demo"},
+                allow_confirm=True,
+            )
+            after = container.facade.inventory().to_dict()
+            container.close()
+
+        self.assertEqual(before["counts"]["skills"], 0)
+        self.assertIn("install_skill", [item["name"] for item in before["tools"]])
+        self.assertTrue(result.ok)
+        self.assertEqual(after["counts"]["skills"], 1)
+        self.assertEqual(after["skills"][0]["id"], "demo")
+
+    def test_bootstrap_requires_both_skill_directories(self) -> None:
+        with self.assertRaises(ValueError):
+            ApplicationBootstrapConfig(skill_import_dir=Path("imports"))
+
     def test_bootstrap_requires_planner_or_model(self) -> None:
         with self.assertRaises(ValueError):
             build_application_container()

@@ -172,13 +172,18 @@ app/gateway -> HarnessFacade
 - `agent/`：planner 和 orchestrator
 - `model/`：模型 provider adapter
 - `memory/`：持久 memory 和 prompt context
-- `skills/`：skill loader 和 safety guard
+- `skills/`：只读 skill loader、安全扫描和受控本地安装生命周期
 - `observability/`：trace、doctor、support bundle
 - `evals/`：benchmark runner 和 health monitor
 - `evals/` 同时包含版本化 release corpus、语义/恢复/时延门槛
 - `progress/`：任务进度和长任务进度快照
 - `tools/`：工具协议、权限、内置文件/消息/URL 工具
+- `tools/builtins/skill_tools.py`：必须确认并经过 outbox 的本地 Skill 安装工具
 - `tools/schema_validation.py`：运行时工具参数校验和受支持 schema 边界
+
+受控 Skill 安装只接受配置好的本地导入目录；禁止路径逃逸和符号链接，危险文本
+会被阻断，相同内容按幂等重放处理，不同内容冲突时不得覆盖。当前不包含网络下载、
+Skill 执行、更新或删除。
 
 ## 5. 关键语义
 

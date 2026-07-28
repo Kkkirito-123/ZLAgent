@@ -385,6 +385,118 @@ class AppCliTests(unittest.TestCase):
         self.assertEqual(data["error"]["type"], "value_error")
         self.assertIn("MISSING_PROVIDER_KEY", data["error"]["message"])
 
+    def test_skill_install_requires_approval_and_survives_cli_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "tasks.sqlite"
+            imports = root / "skill-imports"
+            managed = root / "skills"
+            candidate = imports / "demo"
+            candidate.mkdir(parents=True)
+            managed.mkdir()
+            (candidate / "SKILL.md").write_text(
+                "---\n"
+                "id: demo-skill\n"
+                "name: Demo Skill\n"
+                "version: 1.0.0\n"
+                "---\n"
+                "Use bounded evidence.\n",
+                encoding="utf-8",
+            )
+            model = CliPlanModel(
+                {
+                    "contract": {
+                        "id": "model-contract",
+                        "user_goal": "install a controlled local skill",
+                        "acceptance_criteria": [
+                            {
+                                "id": "skill-installed",
+                                "description": "skill package is installed",
+                                "type": "tool_evidence",
+                                "evidence_refs": ["skill:demo-skill"],
+                            }
+                        ],
+                    },
+                    "steps": [
+                        {
+                            "id": "install-demo-skill",
+                            "tool_name": "install_skill",
+                            "arguments": {
+                                "source_path": "demo",
+                                "skill_id": "demo-skill",
+                            },
+                            "expected_output": "installed Skill",
+                            "verification": "installation evidence exists",
+                            "required_evidence_refs": ["skill:demo-skill"],
+                        }
+                    ],
+                }
+            )
+            capability_args = [
+                "--skill-import-dir",
+                str(imports),
+                "--skills-dir",
+                str(managed),
+            ]
+
+            submit_code, _ = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    *capability_args,
+                    "submit",
+                    "run-skill-install",
+                    "install the demo Skill",
+                    "--model",
+                    "cli-plan-model",
+                ],
+                model=model,
+            )
+            work_code, work = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    *capability_args,
+                    "work",
+                    "run-skill-install",
+                ]
+            )
+            _, status = self._run_json(
+                ["--sqlite", str(db_path), "status", "run-skill-install"]
+            )
+            installed_before_approval = (managed / "demo-skill").exists()
+            token = status["pending_interactions"][0]["resume_token"]
+            approve_code, approval = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    *capability_args,
+                    "approve",
+                    "run-skill-install",
+                    "--resume-token",
+                    token,
+                    "--feedback",
+                    "approved local Skill package",
+                ]
+            )
+            result_code, result = self._run_json(
+                ["--sqlite", str(db_path), "result", "run-skill-install"]
+            )
+
+            self.assertEqual(submit_code, 0)
+            self.assertEqual(work_code, 0)
+            self.assertEqual(work["status"], "parked")
+            self.assertFalse(installed_before_approval)
+            self.assertEqual(approve_code, 0)
+            self.assertTrue(approval["result"]["accepted"])
+            self.assertEqual(result_code, 0)
+            self.assertTrue(result["result"]["verified"])
+            self.assertEqual(
+                result["result"]["outputs"][-1]["tool_name"],
+                "install_skill",
+            )
+            self.assertTrue((managed / "demo-skill" / "SKILL.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
