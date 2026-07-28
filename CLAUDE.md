@@ -253,6 +253,16 @@ src/re_zlagent/harness/memory/
   InMemoryMemoryStore
   MemoryManager
 
+src/re_zlagent/harness/mcp/
+  McpConfig
+  McpServerConfig
+  McpConfigurationError
+  LocalMcpClient
+  McpToolDescriptor
+  McpProxyTool
+  load_mcp_config
+  create_mcp_tools
+
 src/re_zlagent/harness/skills/
   SkillManifest
   FileSystemSkillLoader
@@ -389,6 +399,17 @@ Important semantics:
   conflicts, and treats byte-identical packages as idempotent replays.
 - `InstallSkillTool` is confirm-tier and must execute through durable outbox
   intent; it never downloads, executes, updates, or deletes a Skill.
+- `LocalMcpClient` owns approved local stdio subprocesses on a dedicated event
+  loop, completes the official MCP lifecycle, and closes every session with the
+  application container.
+- MCP configuration must fail closed on unknown fields, unapproved commands,
+  missing exact tool allowlists, missing named environment variables, unsupported
+  transports, and tool schemas the Harness cannot enforce.
+- MCP credentials are resolved only from named host environment variables. Their
+  values must not enter config objects, errors, evidence, raw metadata, or source.
+- Every MCP proxy is confirm-tier, retry-unsafe, and outbox-required regardless
+  of remote annotations. Calls produce `mcp://server/tool` evidence and uncertain
+  outcomes require manual review.
 - `TraceRecorder` records observability facts only; it must not decide runtime completion.
 - Trace metadata is redacted before storage.
 - `DoctorRunner` aggregates explicit diagnostics; failed checks become data, not crashes.
@@ -614,6 +635,17 @@ When touching skills, also verify:
 - byte-identical replay succeeds while different existing content is preserved
 - a dispatch crash retries without creating a duplicate installed Skill
 
+When touching MCP, also verify:
+
+- only explicitly approved local stdio commands can start
+- only exact allowlisted remote tools enter `ToolRegistry`
+- missing named environment variables fail without exposing values
+- SDK initialize, list, call, timeout, and close paths leave no subprocess leak
+- unsupported remote schema keywords fail closed before planning
+- every call waits for user approval and uses the normal Runtime/outbox path
+- evidence uses `mcp://server/tool` provenance
+- timeouts and unknown remote outcomes never retry automatically
+
 When touching observability, also verify:
 
 - spans have valid lifecycle transitions
@@ -710,5 +742,8 @@ When learning from DeerFlow:
 - The repository root is the only active source tree. The recovery tag and local
   `.zlagent/legacy-runtime/` artifacts are not working-tree authority.
 - The core local product is release-gated. Concrete IM gateways, HTTP deployment,
-  durable retrieval memory, MCP, cron, OpenGUI, and DAG concurrency remain deferred
-  product capabilities, not implied production support.
+  durable retrieval memory, remote HTTP/OAuth MCP, MCP installation/update,
+  MCP process sandboxing, deferred MCP schema loading, cron, OpenGUI, and DAG
+  concurrency remain deferred product capabilities, not implied production
+  support. Approved local stdio MCP transport and dynamic tools are implemented
+  only through the bounded M19-MCP slice.

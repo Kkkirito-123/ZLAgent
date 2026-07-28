@@ -43,6 +43,7 @@ namespace，但仓库本身已经提升到根目录。
 │           ├── facade.py
 │           ├── agent/
 │           ├── memory/
+│           ├── mcp/
 │           ├── model/
 │           ├── observability/
 │           ├── evals/
@@ -170,6 +171,16 @@ namespace，但仓库本身已经提升到根目录。
 - `LocalSkillInstaller`
 - `InstallSkillTool`
 
+MCP：
+
+- `McpConfig`
+- `McpServerConfig`
+- `LocalMcpClient`
+- `McpToolDescriptor`
+- `McpProxyTool`
+- `create_mcp_tools`
+- `load_mcp_config`
+
 ### Observability / Evals / Progress
 
 - `TraceRecorder`
@@ -198,6 +209,7 @@ M16     LANDED   持久 worker 所有权和重试预算
 M17     LANDED   真实任务提交与执行 MVP
 M18     LANDED   可靠性和发布门槛
 M19-SKILLS LANDED 受控本地且不覆盖的 Skill 安装
+M19-MCP LANDED 已批准的本地 stdio MCP 生命周期和动态工具适配
 M19-M20 DEFERRED 后续可选迁移和安全 DAG 并发
 M21     LANDED   根目录提升与旧迁移关闭已通过全新 checkout 验证
 ```
@@ -263,7 +275,60 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 
 `source_path` 始终相对于配置好的导入目录。安装必须显式批准，会阻断符号链接、
 路径逃逸和危险文本，也绝不覆盖不同内容。网络下载、Skill 执行、更新、删除、
-依赖安装和 MCP 不属于本切片。
+依赖安装不属于 Skill 切片；MCP 作为下面的独立切片交付。
+
+本地 stdio MCP 同样需要显式启用。先安装可选依赖，并把 host 持有的 JSON 配置
+保存在源码管理之外，例如 `.zlagent/mcp.json`：
+
+```bash
+python -m pip install -e '.[mcp]'
+export GITHUB_TOKEN="..."
+```
+
+```json
+{
+  "servers": [
+    {
+      "id": "github",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "your_mcp_server"],
+      "approved": true,
+      "tools": ["search_repositories", "get_file_contents"],
+      "env": {"GITHUB_TOKEN": "GITHUB_TOKEN"},
+      "startup_timeout_seconds": 10,
+      "request_timeout_seconds": 30
+    }
+  ]
+}
+```
+
+`approved: true` 表示 host 已确认精确的本地进程命令。`tools` 是远端工具名的
+精确白名单，未列出的工具不会进入 Harness registry。`env` 的 value 只能是 host
+环境变量名，不能写密钥值；不得把 credential 放进 `args`，也不要提交此配置。
+subprocess 仍拥有当前 OS 用户的权限：stdio 和批准流程可以缩小暴露面，但不等于进程
+sandbox。只能运行审查过的 MCP server，并给 credential 设置最小权限。
+
+可能规划或执行 MCP 工具的每个进程都必须传入相同配置：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --mcp-config .zlagent/mcp.json \
+  submit run-mcp-001 "使用已批准的 MCP 工具"
+
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --mcp-config .zlagent/mcp.json \
+  work run-mcp-001
+```
+
+远端名称会转换为 `mcp__github__search_repositories` 这类受限本地名称。所有 MCP
+调用都是 confirm-tier，必须声明 durable `mcp` outbox intent，并产生
+`mcp://server/tool` evidence。通用 MCP server 无法保证幂等，因此超时或不确定结果
+必须人工复核，禁止自动重试。当前切片不包含 HTTP/OAuth transport、server
+安装/更新、MCP resources/prompts 和延迟 Schema 加载。
+OS 级进程 sandbox 也保留为单独 hardening 切片。
 
 读取持久输出和验收事实，不会重新执行任务：
 
@@ -311,6 +376,10 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 - 模型只能规划 host 提供 schema 的工具，且 planner JSON 不能授予 confirm-tier 权限。
 - 模型提出的 contract id 和 goal 在持久化前会重新绑定为 host 持有的 request identity。
 - CLI 只从明确命名的环境变量读取模型密钥。
+- MCP server 只能是 host 配置的本地 stdio 进程，必须具备精确命令批准、精确工具
+  白名单、命名环境变量引用、可校验 Schema 和显式生命周期关闭。
+- MCP 调用保持 confirm-tier 和 retry-unsafe，只能经过正常 Runtime/outbox 路径，
+  并产生 `mcp://server/tool` evidence。
 
 ## 验证命令
 
@@ -344,8 +413,11 @@ PYTHONPATH=src python -m re_zlagent.check --pretty
 核心迁移已经关闭。后续产品工作必须先形成明确路线图决策：M19 负责独立可选能力
 切片，M20 负责安全 DAG 并发。不得从恢复标签整体搬回任何 deferred 能力。
 
-M19-SKILLS 当前只提供受控本地且不覆盖的安装。Wiki、Graph-RAG 和 geo 已从当前
-目标中移除；MCP、Skill 下载/更新/删除/执行、cron、OpenGUI 和 DAG 并发仍明确延后。
+M19-SKILLS 已提供受控本地且不覆盖的安装；M19-MCP 已提供经过批准的本地 stdio
+连接和动态工具切片。远程 HTTP/OAuth MCP、server 安装/更新、resources/prompts、
+延迟 Schema 加载、Skill 下载/更新/删除/执行、cron、OpenGUI 和 DAG 并发仍明确
+延后。Token-aware 工具发现和 Schema 加载将作为后续独立切片评估，不与 MCP
+transport 正确性混在一起。
 
 ## 重要边界
 

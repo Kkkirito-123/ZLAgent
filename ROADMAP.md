@@ -137,6 +137,7 @@ Every stage must preserve these invariants:
 | M17 | `LANDED` | Deliver a real task submission and execution MVP. |
 | M18 | `LANDED` | Add CI, benchmarks, fault injection, and latency/reliability gates. |
 | M19-SKILLS | `LANDED` | Add controlled local, non-overwriting Skill installation. |
+| M19-MCP | `LANDED` | Add approved local stdio MCP lifecycle and dynamic tools. |
 | M19 | `DEFERRED` | Migrate any further optional capability one bounded slice at a time. |
 | M20 | `DEFERRED` | Enable safe DAG concurrency after all prerequisite gates pass. |
 | M21 | `LANDED` | Promote the rebuild to root and close the approved legacy migration. |
@@ -475,9 +476,8 @@ inventory, and treats byte-identical content as an idempotent crash replay.
 
 **M19-SKILLS non-scope:** network or repository download, Skill execution,
 curation, update, delete, dependency installation, MCP, and remote registries.
-Those capabilities remain deferred and require separate approval. The M19 stage
-status remains `DEFERRED` because no further optional slice becomes active
-automatically after this bounded delivery.
+MCP was not included in the Skill change and required the separately approved
+slice below.
 
 **M19-SKILLS evidence:** focused tests cover Hermes and legacy packages,
 approval, structured evidence, path/symlink rejection, manifest/source stability,
@@ -485,6 +485,33 @@ dangerous text, package limits, conflict preservation, identical replay,
 inventory refresh, and dispatch-crash recovery. The unified quality gate passes
 328 tests, the 6/6 release benchmark, compileall, Ruff, mypy over 85 source
 files, CLI smoke checks, and package dry-run locally.
+
+**Approved slice M19-MCP (`LANDED`):** the host can load a fail-closed JSON
+configuration for explicitly approved local stdio commands, exact per-server
+tool allowlists, named environment-variable references, and bounded timeouts.
+The official stable Python SDK line (`mcp>=1.28,<2`) owns initialize, capability
+negotiation, tool discovery/calls, and graceful subprocess shutdown on a
+dedicated event-loop thread. Allowlisted remote tools become confirm-tier,
+retry-unsafe, outbox-required Harness tools and produce
+`mcp://server/tool` evidence through the only Runtime lifecycle.
+
+**M19-MCP non-scope:** server install/update, remote HTTP or OAuth transports,
+MCP resources/prompts, trusting remote read-only or idempotency annotations,
+automatic retry after an uncertain outcome, and deferred schema loading/tool
+search. The local subprocess is not an OS sandbox and still runs with the caller's
+privileges. Process sandboxing, token-aware schema discovery, and its metrics
+remain separate later slices.
+
+**M19-MCP evidence:** focused tests cover strict configuration, exact command
+approval, credential-name resolution without value persistence, allowlisting,
+unsupported schema rejection, provider-safe aliases, real stdio initialize/list/
+call/close, Runtime approval continuation, durable outbox confirmation,
+`mcp://` provenance, and real request timeout mapping to manual review. The
+unified quality gate passes 338 tests, the 6/6 release benchmark, compileall,
+Ruff, mypy over 89 source files, CLI smoke checks, and package dry-run locally.
+
+The M19 stage remains `DEFERRED`: landing either bounded slice does not activate
+the remaining optional capabilities automatically.
 
 Wiki, Graph-RAG, and geo are `REMOVED` from the current target. Reopening them
 requires a new product decision and roadmap change.
@@ -582,7 +609,8 @@ boundaries; it does not mean the capability has already been migrated.
 | FastAPI routes and deployment wrappers | `DEFERRED` | no HTTP product server is in the current MVP | product decision before deletion |
 | durable memory and retrieval | `DEFERRED` | versioned in-memory boundary exists; durable provider/retrieval is not migrated | M19, user/product owner |
 | skill curator, consolidation, review and usage lifecycle | `DEFERRED` | controlled local non-overwriting install is landed; curation, update, delete, execution and usage lifecycle remain deferred | M19, user/product owner |
-| MCP install, transport and dynamic tool lifecycle | `DEFERRED` | requires a separate permission/credential/outbox slice | M19, user/product owner |
+| local stdio MCP transport and dynamic tool lifecycle | `REPLACED` | exact command approval, tool allowlist, named credentials, confirm/outbox/evidence boundary | M19-MCP |
+| MCP install/update, remote HTTP/OAuth, resources/prompts, deferred schema loading | `DEFERRED` | requires separate supply-chain, auth, discovery, and token-eval slices | M19, user/product owner |
 | cron and scheduled delivery | `DEFERRED` | requires durable scheduler ownership and delivery semantics | M19, user/product owner |
 | OpenGUI and Android execution | `DEFERRED` | explicitly excluded from the core rebuild | M19, user/product owner |
 | code execution, web search, delegation/subagents | `DEFERRED` | high-risk/product-specific tools need separate sandbox and acceptance slices | user/product owner |

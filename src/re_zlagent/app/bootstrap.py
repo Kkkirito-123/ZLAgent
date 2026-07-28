@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from re_zlagent.harness import HarnessFacade, build_harness_facade
 from re_zlagent.harness.agent import AgentOrchestrator, AgentPlanner, JsonPlanPlanner
+from re_zlagent.harness.mcp import LocalMcpClient, create_mcp_tools, load_mcp_config
 from re_zlagent.harness.model import ModelClient
 from re_zlagent.harness.progress import TaskProgressReader
 from re_zlagent.harness.runtime import HarnessRuntime
@@ -35,6 +37,7 @@ class ApplicationBootstrapConfig:
     register_file_tools: bool = True
     skill_import_dir: Path | None = None
     skills_dir: Path | None = None
+    mcp_config_path: Path | None = None
 
     def __post_init__(self) -> None:
         if self.workspace_dir is not None:
@@ -45,6 +48,8 @@ class ApplicationBootstrapConfig:
             object.__setattr__(self, "skill_import_dir", Path(self.skill_import_dir))
         if self.skills_dir is not None:
             object.__setattr__(self, "skills_dir", Path(self.skills_dir))
+        if self.mcp_config_path is not None:
+            object.__setattr__(self, "mcp_config_path", Path(self.mcp_config_path))
         if (self.skill_import_dir is None) != (self.skills_dir is None):
             raise ValueError(
                 "skill_import_dir and skills_dir must be configured together"
@@ -66,10 +71,13 @@ class ApplicationContainer:
     operator: OperatorService
     approvals: ApprovalService
     progress_reader: TaskProgressReader
+    mcp_client: LocalMcpClient | None
 
     def close(self) -> None:
         """Close owned resources when adapters expose a close method."""
 
+        if self.mcp_client is not None:
+            self.mcp_client.close()
         close = getattr(self.store, "close", None)
         if callable(close):
             close()
@@ -90,10 +98,13 @@ class ApplicationRuntimeContainer:
     operator: OperatorService
     approvals: ApprovalService
     progress_reader: TaskProgressReader
+    mcp_client: LocalMcpClient | None
 
     def close(self) -> None:
         """Close owned resources when adapters expose a close method."""
 
+        if self.mcp_client is not None:
+            self.mcp_client.close()
         close = getattr(self.store, "close", None)
         if callable(close):
             close()
@@ -110,6 +121,7 @@ def build_application_container(
     long_task_store: LongTaskStore | None = None,
     tool_registry: ToolRegistry | None = None,
     config: ApplicationBootstrapConfig | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> ApplicationContainer:
     """Build the minimal re_zlagent application graph."""
 
@@ -120,12 +132,17 @@ def build_application_container(
         long_task_store=long_task_store,
         tool_registry=tool_registry,
         config=cfg,
+        environ=environ,
     )
-    resolved_planner = _resolve_planner(
-        planner=planner,
-        model=model,
-        tools=services.tools,
-    )
+    try:
+        resolved_planner = _resolve_planner(
+            planner=planner,
+            model=model,
+            tools=services.tools,
+        )
+    except Exception:
+        services.close()
+        raise
     orchestrator = AgentOrchestrator(
         planner=resolved_planner,
         runtime=services.runtime,
@@ -143,6 +160,7 @@ def build_application_container(
         operator=services.operator,
         approvals=services.approvals,
         progress_reader=services.progress_reader,
+        mcp_client=services.mcp_client,
     )
 
 
@@ -152,6 +170,7 @@ def build_application_runtime(
     long_task_store: LongTaskStore | None = None,
     tool_registry: ToolRegistry | None = None,
     config: ApplicationBootstrapConfig | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> ApplicationRuntimeContainer:
     """Build runtime/operator services without requiring model configuration."""
 
@@ -159,19 +178,35 @@ def build_application_runtime(
     resolved_store = store or _build_store(cfg)
     resolved_long_task_store = long_task_store or _build_long_task_store(cfg)
     tools = tool_registry or ToolRegistry()
-    if cfg.register_file_tools and cfg.workspace_dir is not None:
-        for tool in create_file_tools(cfg.workspace_dir):
-            tools.register(tool)
-    skill_loader: FileSystemSkillLoader | None = None
-    if cfg.skill_import_dir is not None and cfg.skills_dir is not None:
-        skill_loader = FileSystemSkillLoader(cfg.skills_dir)
-        skill_loader.load()
-        installer = LocalSkillInstaller(
-            cfg.skill_import_dir,
-            cfg.skills_dir,
-            loader=skill_loader,
-        )
-        tools.register(InstallSkillTool(installer))
+    mcp_client: LocalMcpClient | None = None
+    try:
+        if cfg.register_file_tools and cfg.workspace_dir is not None:
+            for file_tool in create_file_tools(cfg.workspace_dir):
+                tools.register(file_tool)
+        skill_loader: FileSystemSkillLoader | None = None
+        if cfg.skill_import_dir is not None and cfg.skills_dir is not None:
+            skill_loader = FileSystemSkillLoader(cfg.skills_dir)
+            skill_loader.load()
+            installer = LocalSkillInstaller(
+                cfg.skill_import_dir,
+                cfg.skills_dir,
+                loader=skill_loader,
+            )
+            tools.register(InstallSkillTool(installer))
+        if cfg.mcp_config_path is not None:
+            mcp_client = LocalMcpClient(
+                load_mcp_config(cfg.mcp_config_path),
+                environ=environ,
+            )
+            mcp_client.start()
+            for mcp_tool in create_mcp_tools(mcp_client):
+                tools.register(mcp_tool)
+    except Exception:
+        if mcp_client is not None:
+            mcp_client.close()
+        _close_resource(resolved_store)
+        _close_resource(resolved_long_task_store)
+        raise
 
     runtime = HarnessRuntime(
         store=resolved_store,
@@ -196,6 +231,7 @@ def build_application_runtime(
         operator=operator,
         approvals=approvals,
         progress_reader=progress_reader,
+        mcp_client=mcp_client,
     )
 
 
@@ -236,3 +272,9 @@ def _build_long_task_store(config: ApplicationBootstrapConfig) -> LongTaskStore:
     if config.sqlite_path is not None:
         return SqliteLongTaskStore(config.sqlite_path)
     return InMemoryLongTaskStore()
+
+
+def _close_resource(resource: object) -> None:
+    close = getattr(resource, "close", None)
+    if callable(close):
+        close()

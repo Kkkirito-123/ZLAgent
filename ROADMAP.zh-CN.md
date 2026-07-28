@@ -113,6 +113,7 @@
 | M17 | `LANDED` | 交付真实任务提交与执行 MVP。 |
 | M18 | `LANDED` | 增加 CI、benchmark、故障注入和时延/可靠性门槛。 |
 | M19-SKILLS | `LANDED` | 增加受控本地且不覆盖的 Skill 安装。 |
+| M19-MCP | `LANDED` | 增加经过批准的本地 stdio MCP 生命周期和动态工具。 |
 | M19 | `DEFERRED` | 后续可选能力仍需逐个独立切片迁移。 |
 | M20 | `DEFERRED` | 所有前置门槛通过后启用安全 DAG 并发。 |
 | M21 | `LANDED` | 把重构提升到根目录并关闭已批准的旧迁移。 |
@@ -386,13 +387,34 @@ adapter 提供 submit、status、work、approval 和 result；OpenAI-compatible 
 inventory，并把字节完全相同的内容当作崩溃恢复时的幂等重放。
 
 **M19-SKILLS 不做：** 网络或仓库下载、Skill 执行、curation、更新、删除、依赖安装、
-MCP 和远程 registry。这些能力仍然延后，必须分别批准。M19 的阶段状态仍为
-`DEFERRED`，因为完成这一受限切片后不会自动激活其他可选能力。
+MCP 和远程 registry。MCP 不包含在 Skill 改动中，必须通过下面单独批准的切片交付。
 
 **M19-SKILLS 证据：** 聚焦测试覆盖 Hermes 和 legacy 包、显式批准、结构化证据、
 路径/符号链接拒绝、manifest/来源稳定性、危险文本、包限制、冲突保留、相同内容重放、
 inventory 刷新和 dispatch 崩溃恢复。本地统一质量门槛通过 328 项测试、6/6 release
 benchmark、compileall、Ruff、对 85 个源码文件执行的 mypy、CLI smoke 和包 dry-run。
+
+**已批准切片 M19-MCP（`LANDED`）：** host 可以加载 fail-closed JSON 配置，其中只
+允许明确批准的本地 stdio 命令、每个 server 的精确工具白名单、命名环境变量引用和
+受限 timeout。官方稳定 Python SDK（`mcp>=1.28,<2`）在独立 event-loop thread
+中负责 initialize、能力协商、工具发现/调用和 subprocess 正常关闭。白名单远端工具
+会转换为 confirm-tier、retry-unsafe、outbox-required 的 Harness 工具，只能经过
+唯一 Runtime 生命周期执行，并产生 `mcp://server/tool` evidence。
+
+**M19-MCP 不做：** server 安装/更新、远程 HTTP/OAuth transport、MCP
+resources/prompts、信任远端 read-only 或 idempotency annotation、不确定结果后的
+自动重试，以及延迟 Schema 加载/tool search。Token-aware Schema 发现和指标保留为
+后续独立切片。本地 subprocess 不是 OS sandbox，仍以调用者权限运行；进程 sandbox
+也必须作为后续独立 hardening 切片。
+
+**M19-MCP 证据：** 聚焦测试覆盖严格配置、精确命令批准、只按 credential 名称解析且
+不持久化值、工具白名单、不支持 Schema 拒绝、provider-safe alias、真实 stdio
+initialize/list/call/close、Runtime 批准继续执行、durable outbox 确认、`mcp://`
+来源，以及把真实 request timeout 映射为人工复核。本地统一质量门槛通过 338 项测试、
+6/6 release benchmark、compileall、Ruff、对 89 个源码文件执行的 mypy、CLI smoke
+和包 dry-run。
+
+M19 阶段仍为 `DEFERRED`：任一受限切片落地都不会自动激活其余可选能力。
 
 Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成新的产品决策并修改路线图。
 
@@ -477,7 +499,8 @@ M21 因此满足退出门槛。当前没有自动开始的下一阶段；M19 或
 | FastAPI route 和部署脚本 | `DEFERRED` | 当前 MVP 没有 HTTP 产品服务 | 删除前产品决策 |
 | durable memory 和 retrieval | `DEFERRED` | 已有 versioned in-memory 边界；durable provider/retrieval 未迁移 | M19，用户/产品负责人 |
 | skill curator、consolidation、review、usage 生命周期 | `DEFERRED` | 受控本地且不覆盖的安装已落地；curation、更新、删除、执行和 usage 生命周期仍延后 | M19，用户/产品负责人 |
-| MCP 安装、transport、动态工具生命周期 | `DEFERRED` | 需要独立 permission/credential/outbox 切片 | M19，用户/产品负责人 |
+| 本地 stdio MCP transport 和动态工具生命周期 | `REPLACED` | 精确命令批准、工具白名单、命名 credential、confirm/outbox/evidence 边界 | M19-MCP |
+| MCP 安装/更新、远程 HTTP/OAuth、resources/prompts、延迟 Schema 加载 | `DEFERRED` | 需要独立 supply-chain、auth、discovery 和 token-eval 切片 | M19，用户/产品负责人 |
 | cron 和定时发送 | `DEFERRED` | 需要 durable scheduler ownership 和 delivery 语义 | M19，用户/产品负责人 |
 | OpenGUI 和 Android 执行 | `DEFERRED` | 已明确排除在核心重构之外 | M19，用户/产品负责人 |
 | 代码执行、Web 搜索、delegation/subagent | `DEFERRED` | 高风险或产品特定工具需要独立 sandbox/acceptance 切片 | 用户/产品负责人 |

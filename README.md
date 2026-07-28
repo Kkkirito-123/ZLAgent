@@ -37,6 +37,7 @@ flow. Product-specific integrations remain explicit roadmap slices.
 │           ├── facade.py
 │           ├── agent/
 │           ├── memory/
+│           ├── mcp/
 │           ├── model/
 │           ├── observability/
 │           ├── evals/
@@ -217,6 +218,16 @@ Skills:
 - `InstallSkillTool`
 - `scan_skill_text`
 
+MCP:
+
+- `McpConfig`
+- `McpServerConfig`
+- `LocalMcpClient`
+- `McpToolDescriptor`
+- `McpProxyTool`
+- `create_mcp_tools`
+- `load_mcp_config`
+
 Observability:
 
 - `TraceSpan`
@@ -263,6 +274,7 @@ M16     LANDED   durable worker ownership and retry budgets
 M17     LANDED   real task submission and execution MVP
 M18     LANDED   reliability and release gates
 M19-SKILLS LANDED controlled local non-overwriting Skill installation
+M19-MCP LANDED approved local stdio MCP lifecycle and dynamic tool adapters
 M19-M20 DEFERRED further optional migrations and safe DAG concurrency
 M21     LANDED   root promotion and legacy closure verified from a clean checkout
 ```
@@ -332,7 +344,64 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 `source_path` is always relative to the configured import root. Installation
 requires explicit approval, blocks symlinks/path escapes/dangerous text, and
 never overwrites different content. Network download, Skill execution, update,
-delete, dependency installation, and MCP are outside this slice.
+and deletion remain outside the Skill slice. MCP is delivered separately below.
+
+Local stdio MCP is also opt-in. Install the optional dependency and save a
+host-owned JSON configuration outside source control, for example at
+`.zlagent/mcp.json`:
+
+```bash
+python -m pip install -e '.[mcp]'
+export GITHUB_TOKEN="..."
+```
+
+```json
+{
+  "servers": [
+    {
+      "id": "github",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "your_mcp_server"],
+      "approved": true,
+      "tools": ["search_repositories", "get_file_contents"],
+      "env": {"GITHUB_TOKEN": "GITHUB_TOKEN"},
+      "startup_timeout_seconds": 10,
+      "request_timeout_seconds": 30
+    }
+  ]
+}
+```
+
+`approved: true` records approval of the exact local process command. `tools` is
+an exact remote-name allowlist; unlisted tools never enter the Harness registry.
+Each `env` value is the name of a host environment variable, never the secret
+itself. Do not place credentials in `args` or commit the configuration.
+The subprocess still runs with the current OS user's privileges: stdio and
+approval reduce exposure but are not a process sandbox. Run only reviewed MCP
+servers and scope their credentials narrowly.
+
+Pass the same config to every process that plans or executes MCP tools:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --mcp-config .zlagent/mcp.json \
+  submit run-mcp-001 "Use the approved MCP tool"
+
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --mcp-config .zlagent/mcp.json \
+  work run-mcp-001
+```
+
+Remote names become bounded local names such as `mcp__github__search_repositories`.
+All MCP calls are confirm-tier, declare a durable `mcp` outbox intent, and emit
+`mcp://server/tool` evidence. Because a generic MCP server cannot guarantee
+idempotency, a timeout or uncertain outcome requires manual review and is never
+automatically retried. This slice intentionally excludes HTTP/OAuth transports,
+server installation/update, MCP resources/prompts, and deferred schema loading.
+OS-level process sandboxing also remains a separate hardening slice.
 
 Read persisted outputs and acceptance truth without re-executing the task:
 
@@ -418,6 +487,11 @@ claimable work, with `--max-ticks` preventing an unbounded foreground loop.
 - The only Skill mutation path is a confirm-tier controlled local install through
   deterministic outbox intent; dangerous packages and overwrite conflicts fail
   closed, while identical content is an idempotent replay.
+- MCP servers are host-configured local stdio processes with exact command
+  approval, exact tool allowlists, named environment references, bounded
+  schemas, and explicit lifecycle cleanup.
+- MCP tool calls remain confirm-tier and retry-unsafe, execute only through the
+  normal Runtime/outbox path, and produce `mcp://server/tool` evidence.
 - Trace metadata is redacted before storage.
 - Doctor reports and support bundles are redacted by default.
 - Observability records facts, not completion decisions.
@@ -491,6 +565,8 @@ Current tests cover:
 - OpenAI-compatible model adapter
 - memory store and prompt context
 - skill loader, guard, controlled install, and outbox replay
+- MCP config validation, stdio lifecycle, allowlisting, approval, timeout,
+  outbox, evidence, and secret-redaction boundaries
 - observability trace recorder
 - doctor and support bundle
 - harness doctor readiness check
@@ -512,10 +588,13 @@ roadmap decision: M19 owns bounded optional capability slices and M20 owns safe
 DAG concurrency. No deferred capability should be restored wholesale from the
 legacy tag.
 
-M19-SKILLS now provides only controlled local non-overwriting installation.
-Wiki, Graph-RAG, and geo are removed from the current target. MCP, Skill
-download/update/delete/execution, cron, OpenGUI, and DAG concurrency remain
-explicitly deferred.
+M19-SKILLS provides controlled local non-overwriting installation. M19-MCP now
+provides the approved local stdio connection and dynamic tool slice. Remote
+HTTP/OAuth MCP, server installation/update, resources/prompts, deferred schema
+loading, Skill download/update/delete/execution, cron, OpenGUI, and DAG
+concurrency remain explicitly deferred. Token-aware tool discovery and schema
+loading will be evaluated as a separate later slice rather than mixed into MCP
+transport correctness.
 
 ## Package And CLI Smoke Checks
 

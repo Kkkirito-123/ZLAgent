@@ -172,6 +172,7 @@ app/gateway -> HarnessFacade
 - `agent/`：planner 和 orchestrator
 - `model/`：模型 provider adapter
 - `memory/`：持久 memory 和 prompt context
+- `mcp/`：host 批准的本地 stdio MCP 配置、SDK 生命周期和动态工具适配
 - `skills/`：只读 skill loader、安全扫描和受控本地安装生命周期
 - `observability/`：trace、doctor、support bundle
 - `evals/`：benchmark runner 和 health monitor
@@ -184,6 +185,14 @@ app/gateway -> HarnessFacade
 受控 Skill 安装只接受配置好的本地导入目录；禁止路径逃逸和符号链接，危险文本
 会被阻断，相同内容按幂等重放处理，不同内容冲突时不得覆盖。当前不包含网络下载、
 Skill 执行、更新或删除。
+
+本地 MCP 只接受 host 明确批准的精确 stdio 命令和精确工具白名单；credential 只能
+通过环境变量名解析。所有动态 MCP 工具保持 confirm-tier、retry-unsafe 和
+outbox-required，通过正常 Runtime 路径执行并产生 `mcp://server/tool` evidence。
+未知配置字段、缺失环境变量、不支持的 transport 或 Harness 无法执行校验的远端
+Schema 都必须 fail closed。HTTP/OAuth、server 安装/更新、resources/prompts 和延迟
+Schema 加载不属于当前切片。本地 subprocess 仍以调用者权限运行，不得把 stdio
+误当作 OS sandbox；进程 sandbox 需要单独 hardening。
 
 ## 5. 关键语义
 
@@ -289,6 +298,7 @@ compile、Ruff、mypy、CLI smoke 和 package validation。Benchmark 只能观�
 - `src/re_zlagent/harness/agent/`
 - `src/re_zlagent/harness/model/`
 - `src/re_zlagent/harness/memory/`
+- `src/re_zlagent/harness/mcp/`
 - `src/re_zlagent/harness/skills/`
 - `src/re_zlagent/harness/observability/`
 - `src/re_zlagent/harness/evals/`

@@ -67,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Managed installed-Skill root; requires --skill-import-dir.",
     )
     parser.add_argument(
+        "--mcp-config",
+        help="Host-owned JSON config for approved local stdio MCP servers.",
+    )
+    parser.add_argument(
         "--pretty",
         action="store_true",
         help="Pretty-print JSON output.",
@@ -226,11 +230,16 @@ async def _run_command(
             Path(args.skill_import_dir) if args.skill_import_dir else None
         ),
         skills_dir=Path(args.skills_dir) if args.skills_dir else None,
+        mcp_config_path=Path(args.mcp_config) if args.mcp_config else None,
     )
     command = str(args.command)
     if command == "submit":
         resolved_model = injected_model or _model_from_args(args, environ=environ)
-        container = build_application_container(model=resolved_model, config=config)
+        container = build_application_container(
+            model=resolved_model,
+            config=config,
+            environ=environ,
+        )
         try:
             adapter = _local_adapter(
                 container,
@@ -251,7 +260,7 @@ async def _run_command(
         finally:
             container.close()
 
-    services = build_application_runtime(config=config)
+    services = build_application_runtime(config=config, environ=environ)
     try:
         worker = DurableWorker(
             worker_id=getattr(args, "worker_id", "local-worker"),
