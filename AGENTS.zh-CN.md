@@ -7,6 +7,8 @@ coding agent 的仓库级规范以英文 `AGENTS.md` 为准；开始计划或修
 - `AGENTS.zh-CN.md` 必须与英文文件保持语义一致。
 - `CLAUDE.md` 只作为无冲突的薄导入文件。
 - 如果将来增加嵌套 `AGENTS.md`，它只覆盖所在子树。目前没有嵌套仓库指南。
+- 本规则包改写自 `ATTRIBUTIONS.md` 记录的已审计 Vibe Coding Rules 版本。只要派生的
+  指南、Skills 或校验器仍保留，就必须持续维护该来源清单。
 
 面向用户的回复、计划、开发说明和复盘默认使用中文。源码和文档统一使用 UTF-8。
 
@@ -60,8 +62,8 @@ checkpoint，并只使用覆盖任务所需的最小 Skill 集合。
 
 - L0：只读检查、解释、聚焦测试，或不影响接口、依赖、schema、权限和架构的明显
   局部小 bug。可直接在本指南约束下执行。
-- L1：影响局部的有界实现或文档改动。使用 `implement-change`；若用户要求完整交付，
-  使用 `deliver-change`。
+- L1：影响局部的有界实现或文档改动。小型单一表面修改使用 `implement-change`；完整
+  功能、重构、多文件交付或端到端交付使用 `deliver-change`。
 - L2：架构、协议、权限、schema、依赖、公共 API、删除、批量重写或仓库基线工作。
   必要时先用 `define-requirement`，得到确认后使用 `deliver-change` 和相关专项工作流。
 
@@ -74,6 +76,10 @@ checkpoint，并只使用覆盖任务所需的最小 Skill 集合。
 ZLAgent（`Kkkirito-123/ZLAgent`）是一个以 IM 为主要入口的个人助手产品。它从个人
 微信、企业微信群机器人、Webhook、HTTP 和定时任务接收消息，为每轮对话注入技能、
 记忆和知识，让 LLM 在受限工具范围内做选择，并通过原始投递渠道返回结果。
+
+它的工程目标是在真实个人助手产品中学习和验证 Agent Harness 实践：能力发现、宿主
+授权、执行、结构化失败、证据、副作用与 trace 必须形成一条可检查链路。Hermes Agent
+和 OpenClaw 是可扩展个人助手的产品与工程参考，不是要照抄的功能清单或代码来源。
 
 本仓库不是 OpenZLAgent。OpenZLAgent 是独立的通用 Harness 项目，只能作为只读的
 工程参考。不要把它的产品结构或代码整体复制到 ZLAgent，也不要声称 ZLAgent 已经
@@ -171,6 +177,7 @@ python -m compileall -q backend scripts tests
 python -m unittest discover -s tests
 ruff check backend scripts tests
 ZLAGENT_DEMO_FAST=1 ZLAGENT_MCP_ENABLED=false python scripts/demo_e2e.py
+python scripts/demo_capability_lifecycle.py
 docker compose config --quiet
 docker compose up -d --build
 ```

@@ -80,6 +80,46 @@ class ValidatorRegressionTests(unittest.TestCase):
             VALIDATOR.validate_claude_import()
         self.assertTrue(VALIDATOR.errors)
 
+    def test_template_license_and_attribution_contract(self) -> None:
+        valid_attributions = (
+            "Apart from standard license notices reproduced for their intended "
+            "purpose\n"
+            + "\n".join(VALIDATOR.TEMPLATE_ATTRIBUTION_SOURCES)
+        )
+        valid_readme = (
+            "[MIT License](LICENSE)\n"
+            "[ATTRIBUTIONS.md](ATTRIBUTIONS.md)\n"
+        )
+
+        def valid_text(path: Path) -> str:
+            if path.name == "LICENSE":
+                return VALIDATOR.MIT_LICENSE_TEXT
+            if path.name == "ATTRIBUTIONS.md":
+                return valid_attributions
+            if path.name in {"README.md", "README.zh-CN.md"}:
+                return valid_readme
+            return ""
+
+        with mock.patch.object(VALIDATOR, "read_text", side_effect=valid_text):
+            VALIDATOR.validate_license_and_attributions(template_mode=True)
+        self.assertFalse(VALIDATOR.errors)
+
+        self.setUp()
+
+        def invalid_text(path: Path) -> str:
+            if path.name == "LICENSE":
+                return "MIT-like text is not the canonical license\n"
+            if path.name == "ATTRIBUTIONS.md":
+                return valid_attributions.replace(
+                    VALIDATOR.TEMPLATE_ATTRIBUTION_SOURCES[-1], ""
+                )
+            return valid_text(path)
+
+        with mock.patch.object(VALIDATOR, "read_text", side_effect=invalid_text):
+            VALIDATOR.validate_license_and_attributions(template_mode=True)
+        self.assertTrue(any("canonical approved MIT" in e for e in VALIDATOR.errors))
+        self.assertTrue(any("audited source records" in e for e in VALIDATOR.errors))
+
     def test_local_link_boundaries_and_reference_definitions(self) -> None:
         cases = (
             ("[x][missing]\n", "undefined Markdown reference"),

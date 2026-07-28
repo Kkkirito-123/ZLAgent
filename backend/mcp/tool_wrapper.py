@@ -82,9 +82,28 @@ class MCPTool(Tool):
             self._descriptor.name,
             arguments or {},
         )
+        source_ref = (
+            f"mcp://{self._descriptor.server_name}/{self._descriptor.name}"
+        )
+        provenance = {
+            "source": source_ref,
+            "server_name": self._descriptor.server_name,
+            "tool_name": self._descriptor.name,
+        }
         if ok:
-            return ToolResult(ok=True, content=content)
-        return ToolResult(ok=False, content=content or "", error=error or "MCP call failed")
+            return ToolResult(
+                ok=True,
+                content=content,
+                raw=provenance,
+                source=self.name,
+            )
+        return ToolResult(
+            ok=False,
+            content=content or "",
+            error=error or "MCP call failed",
+            raw=provenance,
+            source=self.name,
+        )
 
     # -- helpers -------------------------------------------------------------
 

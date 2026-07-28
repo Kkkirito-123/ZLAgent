@@ -1,6 +1,7 @@
 # ZLAgent
 
-面向个人长期使用的 IM 优先 AI 助理。
+面向个人长期使用、支持 Skill 与 MCP 扩展的 IM 优先 AI 助理，也是一个持续学习
+Agent Harness 的实践项目。
 
 ![ZLAgent preview](photo.png)
 
@@ -32,11 +33,26 @@ ZLAgent 接收微信、Webhook、HTTP 和定时任务消息，在每轮对话中
 ZLAgent 是个人助手产品，不是通用任务 Harness。OpenZLAgent 可以作为 Harness
 工程参考，但两者是独立项目。
 
+## 项目定位与学习边界
+
+产品层面，ZLAgent 的目标是让个人通过微信等熟悉入口调用一个可持续扩展的助手：
+本地 Skill 保存可复用方法，MCP 接入外部工具，记忆承接长期偏好，定时任务负责主动
+工作。Hermes Agent 与 OpenClaw 是产品和工程参考，不是要逐项复刻的功能清单。
+
+工程层面，本项目用真实个人助手需求学习 Agent Harness：把工具发现、权限确认、执行、
+结构化错误、来源证据、副作用与 trace 放进同一条可验证链路。当前 Harness 的责任边界
+是“一次工具调用”，不是持久化任务调度系统；仓库尚未提供 durable TaskContract、
+worker/outbox 或 exactly-once 副作用保证。
+
+这意味着本文或演示可以讲“如何在旧项目里逐步建立 Harness 边界”，但不能把现状包装成
+已经完成的通用 Agent 平台。
+
 ## 核心能力
 
 - **多入口对话**：个人微信、企业微信群机器人、Webhook、HTTP、定时任务。
 - **上下文与记忆**：短期会话上下文、长期偏好与事实、长对话压缩。
-- **技能与知识**：按任务加载技能，按规则使用 wiki cache、文件知识库与图谱快照。
+- **技能与知识**：安装或创建本地 Skill，按任务加载，并按规则使用 wiki cache、文件
+  知识库与图谱快照。
 - **受控工具执行**：内置工具与 MCP 工具统一经过权限、确认、错误恢复和 trace。
 - **主动任务**：定时任务、消息投递、复盘和知识维护服务。
 - **运行检查**：健康检查、组件自检、网关状态、工具与 MCP 管理接口。
@@ -196,6 +212,15 @@ ZLAGENT_MCP_ENABLED=false
 安装外部 MCP、执行代码、写文件、发消息和修改定时任务都属于有副作用操作。模型输出
 不能为自己授权。
 
+仓库提供一个完全离线的能力生命周期演示：它先验证 Skill 创建会被确认门拦截，再由
+宿主显式授权创建本地 Skill；随后注册一个只读 Mock MCP 工具，通过
+`HarnessExecution` 执行并产生 `mcp://` 来源证据，最后从统一生命周期入口卸载 Skill。
+该演示不证明真实第三方 MCP transport、网络或 provider：
+
+```bash
+python scripts/demo_capability_lifecycle.py
+```
+
 ## 记忆与知识边界
 
 - **会话上下文**：承接最近对话与补槽信息。
@@ -265,11 +290,13 @@ python -m compileall -q backend scripts tests
 python -m unittest discover -s tests
 ruff check backend scripts tests
 ZLAGENT_DEMO_FAST=1 ZLAGENT_MCP_ENABLED=false python scripts/demo_e2e.py
+python scripts/demo_capability_lifecycle.py
 docker compose config --quiet
 ```
 
-GitHub Actions 在 Python 3.11 与 3.13 上运行规则检查、编译、单元测试、ruff 和离线
-demo。以下脚本需要网络、provider 凭据、外部进程或运行中的服务，结果应单独报告：
+GitHub Actions 在 Python 3.11 与 3.13 上运行规则检查、编译、单元测试、ruff、离线
+产品 demo 和离线 Harness 能力生命周期 demo。以下脚本需要网络、provider 凭据、
+外部进程或运行中的服务，结果应单独报告：
 
 ```bash
 python scripts/smoke_llm_graph.py
@@ -291,4 +318,5 @@ python scripts/mcp_e2e_http_check.py
 
 ## License
 
-本项目以 [MIT License](LICENSE) 发布。
+本项目以 [MIT License](LICENSE) 发布；保留、改写和参考来源见
+[ATTRIBUTIONS.md](ATTRIBUTIONS.md)。

@@ -18,6 +18,8 @@ ROOT = SCRIPT_PATH.parents[1].resolve()
 PORTABLE_ROOT_FILES = (
     "AGENTS.md",
     "CLAUDE.md",
+    "LICENSE",
+    "ATTRIBUTIONS.md",
     ".gitignore",
 )
 TEMPLATE_ROOT_FILES = (
@@ -25,6 +27,7 @@ TEMPLATE_ROOT_FILES = (
     "README.md",
     "README.zh-CN.md",
 )
+TEMPLATE_AUTOMATION_FILES = (".github/workflows/validate.yml",)
 REQUIRED_SKILLS = {
     "bootstrap-repository",
     "define-requirement",
@@ -33,6 +36,51 @@ REQUIRED_SKILLS = {
     "publish-change",
     "sync-project-guide",
 }
+MIT_LICENSE_TEXT = """MIT License
+
+Copyright (c) 2026 Kkkirito-123
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+TEMPLATE_ATTRIBUTION_SOURCES = (
+    "https://developers.openai.com/codex/guides/agents-md",
+    "https://developers.openai.com/codex/skills",
+    (
+        "https://github.com/openai/skills/tree/"
+        "49f948faa9258a0c61caceaf225e179651397431/skills/.system/skill-creator"
+    ),
+    "https://code.claude.com/docs/en/memory",
+    "https://agentskills.io/specification",
+    "https://google.github.io/eng-practices/review/developer/small-cls.html",
+    "https://microsoft.github.io/code-with-engineering-playbook/code-reviews/pull-requests/",
+    "https://github.com/Core-Mate/OpenGUI/tree/7cf28b90866459e74300869766896f953761dd60",
+    "https://github.com/bytedance/deer-flow/tree/1a1c5def0da35e8347009fe1fed8e0e2321b0ede",
+    "https://mp.weixin.qq.com/s/mGGIbFyF4U1PrBJVdfgcvg",
+    "https://github.com/obra/superpowers/tree/d884ae04edebef577e82ff7c4e143debd0bbec99",
+    "https://github.com/addyosmani/agent-skills/tree/2fbfa004a0192529bc997d103fc12f19a3804aab",
+    (
+        "https://github.com/multica-ai/andrej-karpathy-skills/tree/"
+        "2c606141936f1eeef17fa3043a72095b4765b9c2"
+    ),
+    "https://github.com/actions/checkout/tree/3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "https://github.com/actions/setup-python/tree/5fda3b95a4ea91299a34e894583c3862153e4b97",
+)
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*]\(([^)]+)\)")
 MARKDOWN_REFERENCE_DEFINITION_RE = re.compile(
@@ -67,7 +115,10 @@ RULE_PATHSPECS = (
     "CLAUDE.md",
     "README.md",
     "README.zh-CN.md",
+    "LICENSE",
+    "ATTRIBUTIONS.md",
     ".gitignore",
+    ".github/workflows/validate.yml",
     ".agents/skills",
     "scripts",
 )
@@ -285,7 +336,8 @@ def parse_openai_metadata(path: Path, text: str) -> dict[str, dict[str, object]]
 
 def validate_root_files(template_mode: bool) -> list[Path]:
     previous_error_count = len(errors)
-    required = PORTABLE_ROOT_FILES + (TEMPLATE_ROOT_FILES if template_mode else ())
+    template_files = TEMPLATE_ROOT_FILES + TEMPLATE_AUTOMATION_FILES
+    required = PORTABLE_ROOT_FILES + (template_files if template_mode else ())
     files: list[Path] = []
     for name in required:
         path = ROOT / name
@@ -297,7 +349,7 @@ def validate_root_files(template_mode: bool) -> list[Path]:
             files.append(path)
 
     if not template_mode:
-        for name in TEMPLATE_ROOT_FILES:
+        for name in template_files:
             path = ROOT / name
             if uses_symlink_component(path):
                 fail(f"{relative(path)}: root rules file must not be a symlink")
@@ -319,10 +371,65 @@ def validate_root_files(template_mode: bool) -> list[Path]:
     else:
         files.append(regression_tests)
     pass_if_clean(
-        "template root files" if template_mode else "portable root files",
+        "template adoption files" if template_mode else "portable root files",
         previous_error_count,
     )
     return sorted(set(files))
+
+
+def validate_license_and_attributions(template_mode: bool) -> None:
+    previous_error_count = len(errors)
+    license_text = read_text(ROOT / "LICENSE")
+    attributions = read_text(ROOT / "ATTRIBUTIONS.md")
+
+    if not license_text.strip():
+        fail("LICENSE must contain an explicit repository license")
+    if not attributions.strip():
+        fail("ATTRIBUTIONS.md must describe external-source scope")
+
+    if template_mode:
+        if license_text != MIT_LICENSE_TEXT:
+            fail("template LICENSE must match the canonical approved MIT text")
+        missing_sources = [
+            source
+            for source in TEMPLATE_ATTRIBUTION_SOURCES
+            if source not in attributions
+        ]
+        if missing_sources:
+            fail("ATTRIBUTIONS.md is missing one or more audited source records")
+        if (
+            "Apart from standard license notices reproduced for their intended "
+            "purpose" not in attributions
+        ):
+            fail("ATTRIBUTIONS.md must state the audited inclusion boundary")
+
+        readme = read_text(ROOT / "README.md")
+        readme_zh = read_text(ROOT / "README.zh-CN.md")
+        readmes = (
+            (ROOT / "README.md", readme),
+            (ROOT / "README.zh-CN.md", readme_zh),
+        )
+        for path, text in readmes:
+            if "[MIT License](LICENSE)" not in text:
+                fail(f"{relative(path)}: missing local MIT License link")
+            if "(ATTRIBUTIONS.md)" not in text:
+                fail(f"{relative(path)}: missing local attribution-register link")
+
+        stale_claims = (
+            "currently has no root `LICENSE`",
+            "本仓库目前没有根 `LICENSE`",
+        )
+        for path in (
+            ROOT / "AGENTS.md",
+            ROOT / "AGENTS.zh-CN.md",
+            ROOT / "README.md",
+            ROOT / "README.zh-CN.md",
+        ):
+            text = read_text(path)
+            if any(claim in text for claim in stale_claims):
+                fail(f"{relative(path)}: contains a stale no-license claim")
+
+    pass_if_clean("license and source attribution", previous_error_count)
 
 
 def validate_skills() -> tuple[list[Path], set[str]]:
@@ -753,13 +860,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--template",
         action="store_true",
-        help="also require and cross-check this template's bilingual README files",
+        help=(
+            "also require and cross-check this template's bilingual README, "
+            "license, and source register"
+        ),
     )
     return parser.parse_args()
 
 
 def main(template_mode: bool = False) -> int:
     root_files = validate_root_files(template_mode)
+    validate_license_and_attributions(template_mode)
     skill_markdown, discovered = validate_skills()
     validate_routing(discovered, template_mode)
     validate_claude_import()

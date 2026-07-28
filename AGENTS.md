@@ -9,6 +9,9 @@ other coding agents. Read it before planning or editing.
 - `CLAUDE.md` is only a conflict-free thin import of this guide.
 - A nested `AGENTS.md`, if added later, overrides this file only within its
   own subtree. No nested repository guide exists today.
+- This rules package is adapted from the audited Vibe Coding Rules revision
+  recorded in `ATTRIBUTIONS.md`. Keep that source register current while the
+  derived guides, Skills, or validator remain.
 
 Default user-facing replies, plans, development notes, and retrospectives are
 Chinese. Source files and documentation use UTF-8.
@@ -78,7 +81,8 @@ Classify work before execution:
   with no interface, dependency, schema, permission, or architecture impact.
   It may proceed directly under this guide.
 - L1: a bounded implementation or documentation change with local impact. Use
-  `implement-change`, or `deliver-change` when end-to-end handoff is requested.
+  `implement-change` for a small single-surface edit; use `deliver-change` for
+  a complete feature, refactor, multi-file delivery, or end-to-end handoff.
 - L2: architecture, protocol, permission, schema, dependency, public API,
   deletion, batch rewrite, or repository-baseline work. Use
   `define-requirement` when needed, obtain approval, then use
@@ -95,6 +99,13 @@ ZLAgent (`Kkkirito-123/ZLAgent`) is an IM-first personal assistant product. It
 accepts messages from personal Weixin, WeCom Bot, Webhook, HTTP, and scheduled
 jobs; enriches each turn with skills, memory, and knowledge; lets an LLM select
 bounded tools; and sends the result through the originating delivery channel.
+
+Its engineering purpose is to learn and validate Agent Harness practices inside
+a real personal-assistant product: capability discovery, host-granted
+permission, execution, structured failure, evidence, side effects, and trace
+must form one inspectable path. Hermes Agent and OpenClaw are product and
+engineering references for extensible personal assistants, not feature
+checklists or code sources to clone.
 
 This repository is not OpenZLAgent. OpenZLAgent is a separate generic Harness
 project and may be used as a read-only engineering reference. Do not copy its
@@ -211,6 +222,7 @@ python -m compileall -q backend scripts tests
 python -m unittest discover -s tests
 ruff check backend scripts tests
 ZLAGENT_DEMO_FAST=1 ZLAGENT_MCP_ENABLED=false python scripts/demo_e2e.py
+python scripts/demo_capability_lifecycle.py
 docker compose config --quiet
 docker compose up -d --build
 ```

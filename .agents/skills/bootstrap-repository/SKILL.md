@@ -44,10 +44,18 @@ without discarding the reusable personal engineering baseline.
    translations without changing the English authority. Add a tool-native
    adapter only when the project uses and verifies it; do not duplicate Skill
    bodies across client-specific directories.
-7. Replace template-specific README content with the real product overview and
-   quick start after those facts are confirmed. Remove upstream design-reference
-   and template-license notes that no longer describe the derived project.
-8. Run available repository validation and inspect the final Diff. This template
+7. Preserve the root `LICENSE` copyright and permission notice for retained
+   template material. Retain and update `ATTRIBUTIONS.md` while the copied rules
+   package or its referenced interoperability and design sources remain in the
+   project. A different project-wide license, additional copyright holder, or
+   removal of a notice requires an explicit maintainer decision and a
+   compatibility review; never present third-party work as relicensed by the
+   derived project.
+8. Replace template-specific README content with the real product overview and
+   quick start after those facts are confirmed. Remove design-reference details
+   that no longer describe retained material, but keep the README's current
+   license and attribution links accurate.
+9. Run available repository validation and inspect the final Diff. This template
    uses `python3 scripts/validate-rules.py --template`; after replacing its
    template-only adoption files, retain and document the portable
    `python3 scripts/validate-rules.py` mode plus the real project's quality
