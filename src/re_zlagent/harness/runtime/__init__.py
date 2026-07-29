@@ -1,5 +1,11 @@
 """Harness runtime lifecycle primitives."""
 
+from .branches import (
+    BranchLineageError,
+    RunBranchNode,
+    RunBranchTree,
+    RunBranchTreeBuilder,
+)
 from .control import (
     RunControlAction,
     RunControlResult,
@@ -28,6 +34,7 @@ from .scheduler import ParkedRunCandidate, ParkedRunKind, ParkedRunScanner
 from .worker import DurableWorker, WorkerTickResult, WorkerTickStatus
 
 __all__ = [
+    "BranchLineageError",
     "HarnessRuntime",
     "AcceptanceContext",
     "ContextPack",
@@ -36,6 +43,9 @@ __all__ = [
     "RunControlAction",
     "RunControlResult",
     "RunControlService",
+    "RunBranchNode",
+    "RunBranchTree",
+    "RunBranchTreeBuilder",
     "InjectedOutboxCrash",
     "NoopOutboxFaultInjector",
     "OutboxAction",

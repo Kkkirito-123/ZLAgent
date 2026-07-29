@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from re_zlagent.harness.memory import (  # noqa: E402
     MemoryManager,
     MemorySource,
     MemoryStoreError,
+    SqliteMemoryStore,
     sanitize_untrusted,
 )
 
@@ -136,6 +138,67 @@ class MemoryManagerTests(unittest.TestCase):
 
         self.assertIn("OpenGUI style", block)
         self.assertIn("mem-1", block)
+
+    def test_explicit_capture_is_deterministic_and_idempotent(self) -> None:
+        store = InMemoryMemoryStore()
+        manager = MemoryManager(store)
+
+        ignored = manager.capture_explicit("我今天吃了面")
+        created = manager.capture_explicit("请记住：我喜欢简洁的报告。")
+        replayed = manager.capture_explicit("记住我喜欢简洁的报告")
+
+        self.assertFalse(ignored.triggered)
+        self.assertTrue(created.triggered)
+        self.assertTrue(created.written)
+        self.assertEqual(created.entry.content, "我喜欢简洁的报告")
+        self.assertFalse(replayed.written)
+        self.assertEqual(replayed.entry.id, created.entry.id)
+        self.assertEqual(
+            created.entry.metadata["capture_policy"],
+            "explicit_language_v1",
+        )
+
+    def test_chinese_keyword_recall_is_relevant_and_fenced(self) -> None:
+        store = InMemoryMemoryStore()
+        store.add("我喜欢简洁的报告", entry_id="mem-report")
+        store.add("我常用蓝色主题", entry_id="mem-theme")
+        manager = MemoryManager(store)
+
+        block = manager.context_block("帮我写一份简洁报告")
+
+        self.assertIn("mem-report", block)
+        self.assertNotIn("mem-theme", block)
+        self.assertTrue(block.startswith(OPEN_TAG))
+
+
+class SqliteMemoryStoreTests(unittest.TestCase):
+    def test_memory_survives_reopen_and_keeps_optimistic_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "agent.sqlite"
+            first = SqliteMemoryStore(path)
+            entry = first.add(
+                "remember across restart",
+                entry_id="mem-persisted",
+            ).entry
+            first.close()
+
+            second = SqliteMemoryStore(path)
+            loaded = second.get(entry.id)
+            self.assertEqual(loaded.content, "remember across restart")
+            updated = second.update(
+                loaded.id,
+                observed_version=loaded.version,
+                pinned=True,
+            )
+            with self.assertRaises(MemoryStoreError):
+                second.update(
+                    loaded.id,
+                    observed_version=loaded.version,
+                    content="stale",
+                )
+            self.assertEqual(updated.version, 2)
+            self.assertTrue(updated.pinned)
+            second.close()
 
 
 if __name__ == "__main__":

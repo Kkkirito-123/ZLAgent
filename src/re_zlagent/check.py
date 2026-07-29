@@ -168,6 +168,16 @@ def build_steps(
                 "--help",
             ),
         ),
+        CheckStep(
+            name="intent-eval-help",
+            command=(
+                sys.executable,
+                "-m",
+                "re_zlagent.app.cli",
+                "intent-eval",
+                "--help",
+            ),
+        ),
     ]
     if not skip_package:
         steps.append(

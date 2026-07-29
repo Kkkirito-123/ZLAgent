@@ -11,6 +11,16 @@ from .corpus import (
     load_benchmark_corpus,
 )
 from .monitor import RunHealthMonitor, RunHealthSnapshot, RunHealthStatus
+from .intent import (
+    IntentEvalCase,
+    IntentEvalCaseResult,
+    IntentEvalCorpus,
+    IntentEvalReport,
+    IntentEvalRunner,
+    default_intent_corpus_path,
+    default_intent_stress_corpus_path,
+    load_intent_eval_corpus,
+)
 from .release import (
     BenchmarkCaseResult,
     BenchmarkObservation,
@@ -33,12 +43,20 @@ __all__ = [
     "EvalCaseResult",
     "EvalScenario",
     "EvalSuiteResult",
+    "IntentEvalCase",
+    "IntentEvalCaseResult",
+    "IntentEvalCorpus",
+    "IntentEvalReport",
+    "IntentEvalRunner",
     "ReleaseBenchmarkReport",
     "ReleaseBenchmarkRunner",
     "RunHealthMonitor",
     "RunHealthSnapshot",
     "RunHealthStatus",
     "default_corpus_path",
+    "default_intent_corpus_path",
+    "default_intent_stress_corpus_path",
     "evaluate_agent_result",
     "load_benchmark_corpus",
+    "load_intent_eval_corpus",
 ]

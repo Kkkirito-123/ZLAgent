@@ -13,6 +13,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from re_zlagent.app.cli import run_cli  # noqa: E402
 from re_zlagent.harness.model import ModelMessage, ModelResponse  # noqa: E402
+from re_zlagent.harness.evals import (  # noqa: E402
+    default_intent_stress_corpus_path,
+    load_intent_eval_corpus,
+)
 from re_zlagent.harness.storage import SqliteTaskStore  # noqa: E402
 from re_zlagent.harness.tasking import (  # noqa: E402
     AcceptanceCriterion,
@@ -35,6 +39,43 @@ class CliPlanModel:
             content=json.dumps(self.plan),
             raw={"provider": "test", "model": "cli-plan-model"},
         )
+
+
+class CliResponseQueueModel:
+    def __init__(self, *responses: str) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[ModelMessage, ...]] = []
+
+    async def complete(
+        self,
+        messages: tuple[ModelMessage, ...],
+    ) -> ModelResponse:
+        self.calls.append(messages)
+        if not self._responses:
+            raise AssertionError("unexpected model call")
+        return ModelResponse(
+            content=self._responses.pop(0),
+            raw={"provider": "test", "model": "cli-general-model"},
+        )
+
+
+def _intent_response(route: str) -> str:
+    reason_by_route = {
+        "chat": "direct_answer",
+        "task": "external_action",
+        "clarify": "missing_details",
+    }
+    return json.dumps(
+        {
+            "route": route,
+            "reason_code": reason_by_route[route],
+            "clarification_question": (
+                "请补充执行目标和必要信息。"
+                if route == "clarify"
+                else None
+            ),
+        }
+    )
 
 
 class AppCliTests(unittest.TestCase):
@@ -207,6 +248,44 @@ class AppCliTests(unittest.TestCase):
         )
         self.assertEqual(forked.metadata["fork_reason"], "alternate branch")
 
+    def test_branches_reads_nested_lineage_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = self._sqlite_with_run(tmp)
+            self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "fork",
+                    "run-1",
+                    "run-2",
+                ]
+            )
+            self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "fork",
+                    "run-2",
+                    "run-3",
+                ]
+            )
+
+            code, data = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "branches",
+                    "run-3",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(data["tree"]["root_run_id"], "run-1")
+        self.assertEqual(data["tree"]["node_count"], 3)
+        self.assertTrue(
+            data["tree"]["root"]["children"][0]["children"][0]["selected"]
+        )
+
     def test_missing_sqlite_returns_json_argument_error(self) -> None:
         code, data = self._run_json(["status", "run-1"])
 
@@ -214,6 +293,271 @@ class AppCliTests(unittest.TestCase):
         self.assertFalse(data["ok"])
         self.assertEqual(data["error"]["type"], "invalid_arguments")
         self.assertIn("--sqlite", data["error"]["message"])
+
+    def test_ask_chat_runs_without_sqlite_and_is_not_verified(self) -> None:
+        model = CliResponseQueueModel("你好，这是通用 Agent 的直接回答。")
+
+        code, data = self._run_json(
+            [
+                "ask",
+                "你好",
+                "--mode",
+                "chat",
+                "--run-id",
+                "ask-chat-1",
+                "--context-json",
+                '{"surface":"cli-test"}',
+            ],
+            model=model,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["command"], "ask")
+        self.assertEqual(data["mode"], "chat")
+        self.assertEqual(data["run_id"], "ask-chat-1")
+        self.assertFalse(data["verified"])
+        self.assertIsNone(data["task"])
+        self.assertEqual(data["response"], "你好，这是通用 Agent 的直接回答。")
+        self.assertIn('"surface": "cli-test"', model.calls[0][1].content)
+        self.assertIsNotNone(data["context_manifest"])
+        self.assertTrue(
+            all(
+                "content" not in segment
+                for segment in data["context_manifest"]["segments"]
+            )
+        )
+
+    def test_ask_auto_routes_chat_and_gates_task_execution(self) -> None:
+        chat_model = CliResponseQueueModel(
+            _intent_response("chat"),
+            "auto chat response",
+        )
+        task_model = CliResponseQueueModel(_intent_response("task"))
+
+        chat_code, chat = self._run_json(
+            ["ask", "解释一下 checkpoint", "--mode", "auto"],
+            model=chat_model,
+        )
+        task_code, task = self._run_json(
+            ["ask", "读取 README.md", "--mode", "auto"],
+            model=task_model,
+        )
+
+        self.assertEqual(chat_code, 0)
+        self.assertEqual(chat["mode"], "chat")
+        self.assertEqual(chat["intent"]["route"], "chat")
+        self.assertEqual(chat["response"], "auto chat response")
+        self.assertEqual(len(chat_model.calls), 2)
+        self.assertEqual(task_code, 0)
+        self.assertEqual(task["mode"], "task")
+        self.assertFalse(task["verified"])
+        self.assertIsNone(task["task"])
+        self.assertEqual(
+            task["response_metadata"]["response_source"],
+            "intent_router_gate",
+        )
+        self.assertEqual(len(task_model.calls), 1)
+
+    def test_explicit_memory_persists_and_is_recalled_after_cli_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "tasks.sqlite"
+            first_model = CliResponseQueueModel()
+            remember_code, remembered = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "ask",
+                    "请记住：我喜欢简洁的报告。",
+                    "--mode",
+                    "chat",
+                ],
+                model=first_model,
+            )
+            second_model = CliResponseQueueModel("以后会保持简洁。")
+            recall_code, recalled = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "ask",
+                    "以后报告怎么写？",
+                    "--mode",
+                    "chat",
+                ],
+                model=second_model,
+            )
+
+        self.assertEqual(remember_code, 0)
+        self.assertTrue(remembered["memory_capture"]["written"])
+        self.assertEqual(first_model.calls, [])
+        self.assertEqual(recall_code, 0)
+        self.assertEqual(recalled["response"], "以后会保持简洁。")
+        self.assertIn("我喜欢简洁的报告", second_model.calls[0][1].content)
+
+    def test_ask_task_executes_runtime_and_returns_verified_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "note.txt").write_text(
+                "General Agent runtime effect.",
+                encoding="utf-8",
+            )
+            db_path = root / "tasks.sqlite"
+            plan = {
+                "contract": {
+                    "id": "model-contract",
+                    "user_goal": "model goal",
+                    "acceptance_criteria": [
+                        {
+                            "id": "note-read",
+                            "description": "note is read",
+                            "type": "tool_evidence",
+                            "evidence_refs": ["note.txt"],
+                        }
+                    ],
+                },
+                "steps": [
+                    {
+                        "id": "read-note",
+                        "tool_name": "read_file",
+                        "arguments": {"path": "note.txt"},
+                        "required_evidence_refs": ["note.txt"],
+                    }
+                ],
+            }
+            model = CliResponseQueueModel(
+                json.dumps(plan),
+                "效果验证：已通过 Runtime 读取 note.txt。",
+            )
+
+            code, data = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "--workspace",
+                    str(workspace),
+                    "ask",
+                    "读取 note.txt 并说明结果",
+                    "--mode",
+                    "task",
+                    "--run-id",
+                    "ask-task-1",
+                ],
+                model=model,
+            )
+            store = SqliteTaskStore(db_path)
+            run = store.get_run("ask-task-1")
+            store.close()
+
+        self.assertEqual(code, 0)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["mode"], "task")
+        self.assertTrue(data["verified"])
+        self.assertEqual(
+            data["token_usage"],
+            {"aggregate": {}, "phases": {}},
+        )
+        self.assertEqual(data["response"], "效果验证：已通过 Runtime 读取 note.txt。")
+        self.assertEqual(data["task"]["status"], "completed")
+        self.assertTrue(data["task"]["accepted"])
+        self.assertEqual(data["task"]["tool_result_count"], 1)
+        self.assertEqual(
+            data["task"]["acceptance"]["evidence_refs"],
+            ["note.txt"],
+        )
+        self.assertNotIn("events", data["task"])
+        self.assertNotIn(str(workspace), json.dumps(data))
+        self.assertEqual(run.status, TaskRunStatus.COMPLETED)
+        self.assertEqual(len(model.calls), 2)
+        self.assertIn("General Agent runtime effect.", model.calls[1][1].content)
+
+    def test_ask_requires_explicit_model_configuration(self) -> None:
+        code, data = self._run_json(["ask", "hello"], environ={})
+
+        self.assertEqual(code, 2)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["error"]["type"], "invalid_arguments")
+        self.assertIn("ZLAGENT_MODEL_BASE_URL", data["error"]["message"])
+
+    def test_model_output_ceiling_environment_must_be_positive_integer(self) -> None:
+        code, data = self._run_json(
+            ["intent-eval", "--no-api-key"],
+            environ={
+                "ZLAGENT_MODEL_BASE_URL": "http://localhost:1/v1",
+                "ZLAGENT_MODEL_NAME": "local",
+                "ZLAGENT_MODEL_MAX_TOKENS": "invalid",
+            },
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(data["error"]["type"], "invalid_arguments")
+        self.assertIn("max output tokens", data["error"]["message"])
+
+    def test_intent_eval_reports_seed_corpus_accuracy_without_sqlite(self) -> None:
+        corpus = load_intent_eval_corpus()
+        model = CliResponseQueueModel(
+            *[
+                _intent_response(case.expected_route.value)
+                for case in corpus.cases
+            ]
+        )
+
+        code, data = self._run_json(
+            ["intent-eval"],
+            model=model,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["command"], "intent-eval")
+        self.assertEqual(data["corpus_version"], "2026.07.1")
+        self.assertEqual(data["aggregate"]["total"], 24)
+        self.assertEqual(data["aggregate"]["correct"], 24)
+        self.assertEqual(data["aggregate"]["accuracy"], 1.0)
+        self.assertEqual(data["aggregate"]["invalid"], 0)
+        self.assertEqual(data["by_route"]["chat"]["accuracy"], 1.0)
+        self.assertEqual(data["by_route"]["task"]["accuracy"], 1.0)
+        self.assertEqual(data["by_route"]["clarify"]["accuracy"], 1.0)
+        self.assertEqual(len(model.calls), 24)
+
+    def test_intent_eval_returns_nonzero_below_accuracy_target(self) -> None:
+        model = CliResponseQueueModel(
+            *[_intent_response("chat") for _ in range(24)]
+        )
+
+        code, data = self._run_json(
+            ["intent-eval"],
+            model=model,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["aggregate"]["correct"], 8)
+        self.assertAlmostEqual(data["aggregate"]["accuracy"], 1 / 3)
+        self.assertEqual(data["confusion_matrix"]["task"]["chat"], 8)
+        self.assertEqual(data["confusion_matrix"]["clarify"]["chat"], 8)
+
+    def test_intent_eval_stress_uses_separate_packaged_corpus(self) -> None:
+        corpus = load_intent_eval_corpus(
+            default_intent_stress_corpus_path()
+        )
+        model = CliResponseQueueModel(
+            *[
+                _intent_response(case.expected_route.value)
+                for case in corpus.cases
+            ]
+        )
+
+        code, data = self._run_json(
+            ["intent-eval", "--stress"],
+            model=model,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(data["corpus_version"], "2026.07.stress.1")
+        self.assertEqual(data["aggregate"]["total"], 24)
+        self.assertEqual(data["aggregate"]["correct"], 24)
 
     def test_work_returns_structured_not_found_for_unknown_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

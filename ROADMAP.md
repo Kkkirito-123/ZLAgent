@@ -139,8 +139,11 @@ Every stage must preserve these invariants:
 | M19-SKILLS | `LANDED` | Add controlled local, non-overwriting Skill installation. |
 | M19-MCP | `LANDED` | Add approved local stdio MCP lifecycle and dynamic tools. |
 | M19 | `DEFERRED` | Migrate any further optional capability one bounded slice at a time. |
-| M20 | `DEFERRED` | Enable safe DAG concurrency after all prerequisite gates pass. |
+| M20 | `LOCAL` | Enable bounded concurrency only for independent read-only, concurrency-safe DAG steps. |
 | M21 | `LANDED` | Promote the rebuild to root and close the approved legacy migration. |
+| M22 | `LOCAL` | Add a general single-agent facade and measurable intent routing. |
+| M23 | `LOCAL` | Connect bounded context, explicit memory, branch views, and conservative auto routing. |
+| M24 | `LOCAL` | Bound model I/O tokens and add mixed-request routing stress evidence. |
 
 ## 6. Historical Stages
 
@@ -518,7 +521,7 @@ requires a new product decision and roadmap change.
 
 ### M20 - Safe DAG concurrency
 
-**Status:** `DEFERRED`
+**Status:** `LOCAL`
 
 **Objective:** Reduce latency without weakening task truth or side-effect safety.
 
@@ -531,6 +534,21 @@ deterministic result merge and sequential fallback.
 **Exit gate:** conflicting writes cannot run together; cancellation and failure
 propagate deterministically; parallel and sequential runs produce equivalent
 accepted outcomes for the same deterministic scenario.
+
+**Local implementation:** `HarnessRuntime` derives the ready frontier from
+persisted dependencies and executes at most four contiguous ready steps
+together only when the registered host tools are `SAFE`, read-only,
+side-effect-free, outbox-free, and explicitly concurrency-safe. All other
+steps keep deterministic sequential behavior. Batch identity and policy are
+recorded on tool-result events, and recovery accepts multiple in-flight steps
+only when the same safety predicate still holds.
+
+**Local evidence:** focused concurrency tests prove that two independent safe
+reads overlap, dependency-linked or unsafe tools remain linear, batch metadata
+is deterministic, and incomplete parallel reads remain recoverable only under
+the same safety predicate. The unified quality gate passes 386 tests, the 6/6
+release benchmark, compileall, Ruff, mypy over 96 source files, CLI smoke
+checks, and package dry-run locally.
 
 ### M21 - Migration closure and legacy deletion
 
@@ -585,8 +603,161 @@ worktree contained 31 modified files, 3 tracked deletions, and 4 untracked paths
 The approved closure preserved those entries in Git and reduced the active index
 to 171 tracked files, including 23 intentionally retained `workspace/` files.
 
-M21 therefore satisfies its exit gate. There is no automatically active next
-stage; M19 or M20 starts only after a new product decision and approval.
+M21 therefore satisfies its exit gate. At closure there was no automatically
+active next stage. The user later approved M22-M24 as bounded product
+slices and approved the read-only M20 concurrency gate. Remaining M19
+capabilities stay deferred.
+
+### M22 - General single-agent facade
+
+**Status:** `LOCAL`
+
+**Objective:** Expose the proven harness as a small general-purpose Agent that a
+CLI, IM gateway, IDE, or service host can embed without adding product-specific
+policy to the runtime.
+
+**MVP scope:**
+
+- an explicit host-selected `chat` or `task` mode
+- a local JSON `ask` command over the same facade
+- direct chat responses that create no task truth and report `verified=false`
+- task handling through the existing planner, runtime, checkpoint, outbox, and
+  acceptance lifecycle
+- optional bounded response synthesis after trusted task acceptance
+- deterministic runtime-output fallback when response synthesis is unavailable
+  or fails
+- a strict read-only `chat`/`task`/`clarify` intent decision
+- a versioned balanced seed corpus and machine-readable accuracy report
+
+**Not in scope:** automatically executing an intent result, memory writes,
+durable memory, retrieval or RAG, multi-agent delegation, DAG concurrency, and
+domain-specific assistant behavior.
+
+**Exit gate:**
+
+- chat mode executes no tools and creates no task run
+- CLI chat works without SQLite and CLI task can persist one inspected run
+- task mode has no tool-execution path outside `HarnessRuntime`
+- response-model failure cannot change persisted task status or acceptance
+- unaccepted work is never presented as verified
+- prompt context and tool-result content have explicit host bounds
+- intent JSON cannot execute tools, claim completion, or bypass runtime
+- the intent report exposes overall, route, and language accuracy plus invalid
+  output, confusion, latency, and usage
+- focused tests and the full repository check pass
+
+**Local evidence:** focused tests cover isolated chat, missing chat model,
+verified task synthesis, deterministic no-model fallback, response-model
+failure after accepted execution, acceptance failure without synthesis, CLI
+chat without SQLite, and a persisted CLI task with real bounded file reading.
+The user-facing effect smoke passes for both modes with compact output and no
+runtime trace leakage. The unified quality gate passes 386 tests, the 6/6
+release benchmark, compileall, Ruff, mypy over 96 source files, CLI smoke
+checks, and package dry-run locally.
+
+**Approved intent-measurement extension:** the user approved the smallest
+structure needed to measure routing accuracy before enabling automatic routing.
+The extension is evaluation-only: a strict JSON router plus a 24-case balanced
+Chinese/English seed corpus and `intent-eval` CLI. A real-model accuracy number
+requires explicit provider configuration and must not be replaced by scripted
+test accuracy.
+
+### M23 - Bounded adaptive single-agent loop
+
+**Status:** `LOCAL`
+
+**Objective:** Connect the already separated router, memory, context-pack,
+fork-lineage, and DAG-safety boundaries into one understandable single-agent
+loop without adding RAG, multi-agent orchestration, or another execution path.
+
+**MVP scope:**
+
+- an `auto` facade mode that resolves `chat`, `task`, or `clarify`
+- a conservative task-routing gate; automatic task execution stays explicitly
+  host-enabled because a small seed measurement is not a production safety gate
+- deterministic explicit-memory capture for requests such as "remember ...";
+  no model-inferred silent memory
+- relevant keyword recall injected as fenced background context
+- an observable `ContextManifest` with source, trust, character budget,
+  truncation, and token estimate, without echoing private content in metadata
+- a read-only branch tree projected from existing fork lineage
+- bounded concurrent execution only for independent tools that are both
+  read-only and explicitly concurrency-safe
+
+**Not in scope:** embeddings, vector databases, retrieval/RAG, implicit
+preference mining, memory consolidation, multi-agent delegation, concurrent
+side effects, concurrent confirmation steps, distributed scheduling, or
+speculative execution.
+
+**Exit gate:**
+
+- explicit `chat` and `task` behavior remains compatible
+- `auto` clarification never creates a run, and gated task routing never
+  executes without the host opt-in
+- every memory write has an explicit user-language trigger and source metadata
+- prompt context is assembled from bounded manifest segments
+- branch inspection is read-only and detects broken or cyclic lineage
+- only independent read-only concurrency-safe steps overlap; all other steps
+  remain linear
+- crash/recovery, checkpoint, outbox, and acceptance semantics remain owned by
+  `HarnessRuntime`
+- focused tests and the full repository quality gate pass
+
+**Local evidence:** focused tests cover all three automatic routes and the
+task-execution gate; explicit, duplicate-safe, and SQLite-persistent memory;
+content-free context metadata and bounded truncation; nested, broken, and
+cyclic branch lineage; and real overlap only for independent safe reads. The
+unified quality gate passes 386 tests, the 6/6 release benchmark, compileall,
+Ruff, mypy over 96 source files, CLI smoke checks, and package dry-run locally.
+An environment-backed `deepseek-v4-flash` run on 2026-07-29 classified 24/24
+packaged cases correctly, with 100% accuracy for both languages and all routes,
+zero invalid outputs, 1,829 ms average latency, and 8,753 total tokens. This
+small clear-case corpus validates the integration but does not remove the
+default task-execution gate.
+
+### M24 - Token-bounded model I/O and routing stress
+
+**Status:** `LOCAL`
+
+**Objective:** Control model cost and context growth at the harness boundary
+without introducing a billing service, provider lock-in, or another Agent loop.
+
+**MVP scope:**
+
+- per-call input, output, and total Token budgets for Router, Planner, chat, and
+  accepted-task response synthesis
+- conservative preflight estimation that rejects oversized input before a
+  provider call
+- provider-enforced output ceilings when the model adapter supports call options
+- normalized phase and aggregate usage on `GeneralAgentResult` and CLI `ask`
+- provider JSON Output for Router and Planner while retaining strict host parsing
+- a separate balanced 24-case stress corpus for negation, mixed read-and-answer
+  requests, missing pronoun targets, and read-only external actions
+
+**Not in scope:** exact provider tokenizer dependencies, billing ledgers, quota
+services, automatic model trading, prompt-cache infrastructure, hidden prompt
+compression, or enabling automatic task execution by default.
+
+**Exit gate:**
+
+- an over-budget Router or Planner input makes no provider or Runtime call
+- OpenAI-compatible calls receive the lower of the global and phase output caps
+- provider-reported overages and oversized unreported output stop continuation
+- structured model output remains host-validated and cannot grant authority
+- request output exposes normalized usage without provider response payloads
+- seed and stress accuracy reports remain separate and machine-readable
+- focused tests and the full repository quality gate pass
+
+**Local evidence:** focused tests cover preflight rejection without a provider
+call, provider-cap propagation, global-cap precedence, usage normalization and
+phase aggregation, overage rejection, separate stress-corpus loading, and CLI
+configuration failures. The unified quality gate passes 386 tests, the 6/6
+release benchmark, compileall, Ruff, mypy over 96 source files, CLI smoke
+checks, and package dry-run. An environment-backed
+`deepseek-v4-flash` JSON-Output run on 2026-07-29 classified the 24-case stress
+corpus correctly in 24/24 cases, with zero invalid outputs, 1,985 ms average
+latency, and 9,180 total tokens. The task-execution gate remains default-off
+because two small corpora are not production traffic.
 
 ## 8. Capability Decisions
 
@@ -607,7 +778,7 @@ boundaries; it does not mean the capability has already been migrated.
 | release evaluation | `REPLACED` | versioned semantic/recovery/latency corpus and quality gate | M18 |
 | concrete Weixin, WeCom and Webhook gateways | `DEFERRED` | only normalized gateway contracts and local CLI exist; deletion removes live IM entry points | product decision before deletion |
 | FastAPI routes and deployment wrappers | `DEFERRED` | no HTTP product server is in the current MVP | product decision before deletion |
-| durable memory and retrieval | `DEFERRED` | versioned in-memory boundary exists; durable provider/retrieval is not migrated | M19, user/product owner |
+| durable memory and retrieval | `REPLACED` / `DEFERRED` | SQLite versioned memory plus lexical recall is local; embeddings and RAG remain deferred | M23, user/product owner |
 | skill curator, consolidation, review and usage lifecycle | `DEFERRED` | controlled local non-overwriting install is landed; curation, update, delete, execution and usage lifecycle remain deferred | M19, user/product owner |
 | local stdio MCP transport and dynamic tool lifecycle | `REPLACED` | exact command approval, tool allowlist, named credentials, confirm/outbox/evidence boundary | M19-MCP |
 | MCP install/update, remote HTTP/OAuth, resources/prompts, deferred schema loading | `DEFERRED` | requires separate supply-chain, auth, discovery, and token-eval slices | M19, user/product owner |
@@ -616,13 +787,13 @@ boundaries; it does not mean the capability has already been migrated.
 | code execution, web search, delegation/subagents | `DEFERRED` | high-risk/product-specific tools need separate sandbox and acceptance slices | user/product owner |
 | plugins, rich rendering, Redis cache and prompt cache | `DEFERRED` | not required by the local product MVP | user/product owner |
 | wiki, Graph-RAG, geo and travel visited-map domain | `REMOVED` | explicitly removed from the current target | reopen roadmap to restore |
-| default DAG concurrency | `DEFERRED` | sequential semantics are proven; concurrency requires a separate review | M20 |
+| bounded DAG concurrency | `REPLACED` | independent read-only concurrency-safe tools only; mutations remain sequential | M20 |
 
 **Deletion decision resolved:** on 2026-07-11 the user approved the local-core
 closure, local snapshot commits and tag, root promotion, and tracked legacy source
 deletion without pushing. Deferred capabilities are intentionally absent from the
-active product until separately approved M19/M20 work restores them through the
-current boundaries.
+active product until separately approved work restores them through the current
+boundaries.
 
 ## 9. Definition of Done
 

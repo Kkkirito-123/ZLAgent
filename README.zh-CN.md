@@ -159,12 +159,20 @@ namespace，但仓库本身已经提升到根目录。
 - `JsonPlanPlanner`
 - `AgentOrchestrator`
 - `AgentOrchestrator.submit`
+- `GeneralAgent`
+- `GeneralAgentMode`
+- `GeneralAgentResult`
+- `IntentDecision`
+- `IntentRoute`
+- `JsonIntentRouter`
 
 `ToolRegistry` 会在权限判断和副作用规划前强制执行受支持的输入 schema 子集。
 `JsonPlanPlanner` 默认最多进行一次受控修复，并重新校验完整计划；超长计划和完全
 相同的重复工具动作会在持久化前失败。
 - `OpenAICompatibleModelClient`
 - `OpenAICompatibleModelConfig`
+- `ModelCallBudget`
+- `TokenBudgetExceededError`
 - `MemoryManager`
 - `FileSystemSkillLoader`
 - `SkillGuard`
@@ -191,6 +199,9 @@ MCP：
 - `BenchmarkCorpus`
 - `ReleaseBenchmarkRunner`
 - `ReleaseBenchmarkReport`
+- `IntentEvalCorpus`
+- `IntentEvalRunner`
+- `IntentEvalReport`
 - `TaskProgressReader`
 - `LongTaskProgressReader`
 
@@ -210,14 +221,150 @@ M17     LANDED   真实任务提交与执行 MVP
 M18     LANDED   可靠性和发布门槛
 M19-SKILLS LANDED 受控本地且不覆盖的 Skill 安装
 M19-MCP LANDED 已批准的本地 stdio MCP 生命周期和动态工具适配
-M19-M20 DEFERRED 后续可选迁移和安全 DAG 并发
+M19     DEFERRED 其余可选能力迁移
+M20     LOCAL    受限只读 DAG 并发
 M21     LANDED   根目录提升与旧迁移关闭已通过全新 checkout 验证
+M22     LOCAL    通用单 Agent 门面和可测量意图路由
+M23     LOCAL    Context Manifest、显式记忆和分支视图
+M24     LOCAL    Token 受限模型 I/O 和混合请求路由压力测试
 ```
 
 本地产品 MVP 已支持持久化提交、worker 执行、批准恢复，以及跨进程重启读取
 已验证结果。M18 已增加版本化 6-case release corpus、语义和时延阈值、Ruff、
 mypy 和统一机器可读质量命令。仓库根 `.github/workflows/quality.yml` 会在 Python
 3.11 和 3.13 上运行同一门槛。
+
+## 通用单 Agent 门面
+
+`GeneralAgent` 是供 CLI、IM、IDE 或服务 host 嵌入的轻量入口，保留一个门面和
+三种请求模式：
+
+- `chat` 只进行一次普通模型回答，不创建任务 run、不执行工具，并始终返回
+  `verified=False`。
+- `task` 继续使用现有 planner、runtime、checkpoint、副作用和 acceptance 生命周期。
+  只有可信验收通过后，可选 response model 才会把受限工具结果整理为用户答复；
+  这次展示层调用不能改变任务事实。
+- `auto` 使用严格 Intent Router 解析为 `chat`、`task` 或 `clarify`。chat 和
+  clarify 可自动处理；路由出的 task 默认仍被 gate，必须由 host 显式开启执行。
+
+`build_application_container(model=...)` 会通过 `container.general_agent` 暴露该入口。
+自带 planner 的 host 可以单独传入 `response_model`。每个请求还会产生不含正文的
+`ContextManifest`，说明上下文来源、信任级别、字符预算、截断和 Token 估算。
+显式“记住……”语言会通过确定性规则写入配置的 MemoryStore；模型静默推断记忆、
+embedding、RAG 和多 Agent 委派仍不在范围内：
+
+```python
+from re_zlagent.harness.agent import AgentRunRequest, GeneralAgentMode
+
+result = await container.general_agent.run(
+    AgentRunRequest(
+        run_id="host-request-001",
+        user_goal="总结这个请求",
+        context={"surface": "ide"},
+    ),
+    mode=GeneralAgentMode.CHAT,
+)
+print(result.response, result.verified)
+```
+
+保守自动路由，但不自动执行 task：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  ask "解释 checkpoint 设计" --mode auto
+```
+
+查看路由准确率后，host 可以显式允许自动 task 进入同一权限和验收路径；默认仍保持
+gate：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . \
+  ask "读取 README.md" --mode auto --auto-execute-task
+```
+
+本地 CLI 暴露同一个门面。chat 不要求 SQLite：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  ask "说明这个 Agent 能做什么" --mode chat
+```
+
+交互式 task 模式可以持久化 run，并使用已配置的 workspace 工具：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . \
+  ask "读取 README.md 并总结已经实现的核心" \
+  --mode task --run-id ask-readme-001
+```
+
+两个命令都返回紧凑 JSON。`ok` 只表示请求已被处理；只有 `verified` 表示任务通过
+可信 Runtime 验收完成。完整 event、checkpoint 和工具 payload 仍通过 `status`
+与 `result` 查看，不会复制进助手答复。
+
+## 意图路由准确率
+
+`JsonIntentRouter` 是只读的 `chat`、`task`、`clarify` 结构化 Router，不调用
+工具。`auto` 模式已经使用它，但默认 task gate 会阻止路由出的 task 执行。只有
+严格满足 route、reason code 和澄清问题 Schema 的模型输出才会被接受。
+
+随包种子集包含 24 条中英文平衡样例，每类 8 条。它规模很小，只用于衡量清晰样例
+上的回归，不代表生产准确率。使用已配置模型运行：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  intent-eval --model "router-model"
+```
+
+JSON 报告包含整体准确率、按 route 和语言的准确率、非法输出数、混淆矩阵、平均
+时延，以及 provider 提供时的 Token usage。种子目标为 85%。该命令需要真实模型
+配置，但不需要 SQLite。
+
+2026-07-29 使用 `deepseek-v4-flash` 对随包语料实测：24/24 全部正确，中英文与
+三个 route 均为 100%，非法输出为 0，平均时延 1,829 ms，总 Token 8,753。这个
+小型清晰样例集证明集成链路可用，但不足以支持默认开启自动 task 执行。
+
+独立的混合请求语料覆盖否定、读取后回答、代词目标缺失和只读外部动作：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli intent-eval --stress
+```
+
+启用 provider JSON Output 和 Router 预算后，`deepseek-v4-flash` 对该语料实测
+24/24 全部正确，非法输出为 0，平均时延 1,985 ms，总 Token 9,180。seed 与 stress
+报告保持分离，避免清晰样例掩盖歧义请求失败。
+
+## 模型 Token 预算
+
+每个模型阶段都有简单硬边界：
+
+- Router：输入 2,048 / 输出 512 Token
+- Planner：输入 16,000 / 输出 4,096 Token
+- chat 回答：输入 8,192 / 输出 2,048 Token
+- 已验收任务回答合成：输入 8,192 / 输出 1,024 Token
+
+调用前会保守估算输入；兼容 provider 会收到阶段输出上限，
+`ZLAGENT_MODEL_MAX_TOKENS` 还可以施加更低的全局上限。provider usage 会规范化到
+CLI `ask` 输出的 `token_usage.phases` 和 `token_usage.aggregate`。Router 或 Planner
+预检失败发生在 Runtime 执行前；回答合成超预算则回退到已验收 Runtime 输出。
+
+## 记忆、分支与安全 DAG 批次
+
+- SQLite 应用会把版本化个人记忆持久化到同一数据库；召回仍是受限关键词检索，
+  不需要 RAG。
+- 只有显式“记住”语言会写入记忆；重复等价内容具备幂等性，每次写入都记录捕获
+  policy 和 source。
+- `branches RUN_ID` 从已有 fork metadata 投影只读树，不复制 event、checkpoint、
+  plan 或任务事实。
+- `HarnessRuntime` 最多同时执行四个 ready 步骤；只有注册工具彼此独立，同时满足
+  `SAFE`、只读、无副作用、不使用 outbox 且显式 concurrency-safe 才能并发。
+  mutation 和 confirmation 步骤保持线性。
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite branches run-001
+```
 
 ## 本地产品 CLI
 
@@ -354,6 +501,7 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 - `ProgramPlan` 负责把 DAG step 组织成长任务阶段。
 - `PendingInteraction` 是用户/操作员等待点，必须绑定 checkpoint 和 resume token。
 - `ContextPackBuilder` 从持久状态重建恢复上下文，聊天历史不是事实源。
+- `ContextManifest` 在不回显私密 segment 正文的情况下暴露上下文来源和预算。
 - `ProgramPlan` revision 不可变，run 不能改绑 contract 或 plan。
 - retry、alternative-tool 和 approval 恢复会继续所有未完成且可执行的验证 frontier。
 - 替代工具只能完成原持久化步骤，不能修改其 ID、依赖或验证要求。
@@ -361,6 +509,10 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 - `LongTaskStore` 存储 pending interaction、artifact、side effect，不替代 `TaskStore`。
 - `ParkedRunScanner` 只做 parked run 分类，不执行工具、不修改状态。
 - `DagExecutionPolicy` 只给出保守调度建议，不执行 DAG step。
+- `HarnessRuntime` 只允许一个受限批次并发执行独立、只读且 concurrency-safe 的
+  frontier step；其他 frontier 工作保持线性。
+- `RunBranchTreeBuilder` 只读投影 fork lineage，并拒绝缺失或循环 parent chain。
+- Memory 写入必须来自确定性的显式“记住”语言；模型输出不能静默持久化记忆。
 - `LongTaskProgressReader` 只读合并任务进度、长任务投影、parked 状态和 DAG 执行评估。
 - `HarnessRuntime` 是唯一工具执行骨架。
 - `HarnessRuntime.submit` 只持久化计划并保持 run 为 `created`；工具执行只能进入 runtime/worker continuation。
@@ -410,14 +562,14 @@ PYTHONPATH=src python -m re_zlagent.check --pretty
 
 ## 下一步
 
-核心迁移已经关闭。后续产品工作必须先形成明确路线图决策：M19 负责独立可选能力
-切片，M20 负责安全 DAG 并发。不得从恢复标签整体搬回任何 deferred 能力。
+核心迁移已经关闭。M20/M23/M24 当前已经提供受限只读并发、保守自动路由、显式
+持久记忆、Context Manifest、分支视图、分阶段 Token 预算，以及 seed/stress
+路由报告。自动 task 仍由 host 显式开启，而不是默认开启；下一项证据门槛是来自
+代表性 host 流量的重复和扩展评估，不再增加新的架构层。
 
-M19-SKILLS 已提供受控本地且不覆盖的安装；M19-MCP 已提供经过批准的本地 stdio
-连接和动态工具切片。远程 HTTP/OAuth MCP、server 安装/更新、resources/prompts、
-延迟 Schema 加载、Skill 下载/更新/删除/执行、cron、OpenGUI 和 DAG 并发仍明确
-延后。Token-aware 工具发现和 Schema 加载将作为后续独立切片评估，不与 MCP
-transport 正确性混在一起。
+远程 HTTP/OAuth MCP、server 安装/更新、resources/prompts、延迟 Schema 加载、
+Skill 下载/更新/删除/执行、cron、OpenGUI、RAG、隐式记忆挖掘和多 Agent 委派
+仍明确延后。不得从恢复标签整体搬回任何 deferred 能力。
 
 ## 重要边界
 

@@ -97,6 +97,34 @@ class OpenAICompatibleModelClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("Authorization", transport.calls[0]["headers"])
 
+    async def test_call_output_cap_cannot_exceed_client_ceiling(self) -> None:
+        transport = FakeTransport(
+            {"choices": [{"message": {"content": "ok"}}]},
+        )
+        client = OpenAICompatibleModelClient(
+            base_url="https://provider.example/v1",
+            model="bounded",
+            max_tokens=512,
+            transport=transport,
+        )
+
+        await client.complete_with_options(
+            (ModelMessage(role="user", content="first"),),
+            max_tokens=128,
+            response_format="json_object",
+        )
+        await client.complete_with_options(
+            (ModelMessage(role="user", content="second"),),
+            max_tokens=1_024,
+        )
+
+        self.assertEqual(transport.calls[0]["payload"]["max_tokens"], 128)
+        self.assertEqual(
+            transport.calls[0]["payload"]["response_format"],
+            {"type": "json_object"},
+        )
+        self.assertEqual(transport.calls[1]["payload"]["max_tokens"], 512)
+
     async def test_content_parts_are_joined_when_provider_returns_list(self) -> None:
         transport = FakeTransport(
             {

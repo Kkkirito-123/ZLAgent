@@ -7,7 +7,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from re_zlagent.harness import HarnessFacade, build_harness_facade
-from re_zlagent.harness.agent import AgentOrchestrator, AgentPlanner, JsonPlanPlanner
+from re_zlagent.harness.agent import (
+    AgentOrchestrator,
+    AgentPlanner,
+    GeneralAgent,
+    JsonIntentRouter,
+    JsonPlanPlanner,
+)
+from re_zlagent.harness.memory import (
+    InMemoryMemoryStore,
+    MemoryManager,
+    MemoryStore,
+    SqliteMemoryStore,
+)
 from re_zlagent.harness.mcp import LocalMcpClient, create_mcp_tools, load_mcp_config
 from re_zlagent.harness.model import ModelClient
 from re_zlagent.harness.progress import TaskProgressReader
@@ -38,6 +50,7 @@ class ApplicationBootstrapConfig:
     skill_import_dir: Path | None = None
     skills_dir: Path | None = None
     mcp_config_path: Path | None = None
+    allow_auto_task_execution: bool = False
 
     def __post_init__(self) -> None:
         if self.workspace_dir is not None:
@@ -61,6 +74,7 @@ class ApplicationContainer:
     """Concrete assembled application components."""
 
     app: AgentApplication
+    general_agent: GeneralAgent
     facade: HarnessFacade
     orchestrator: AgentOrchestrator
     runtime: HarnessRuntime
@@ -71,6 +85,8 @@ class ApplicationContainer:
     operator: OperatorService
     approvals: ApprovalService
     progress_reader: TaskProgressReader
+    memory_store: MemoryStore
+    memory_manager: MemoryManager
     mcp_client: LocalMcpClient | None
 
     def close(self) -> None:
@@ -78,6 +94,7 @@ class ApplicationContainer:
 
         if self.mcp_client is not None:
             self.mcp_client.close()
+        _close_resource(self.memory_store)
         close = getattr(self.store, "close", None)
         if callable(close):
             close()
@@ -98,6 +115,8 @@ class ApplicationRuntimeContainer:
     operator: OperatorService
     approvals: ApprovalService
     progress_reader: TaskProgressReader
+    memory_store: MemoryStore
+    memory_manager: MemoryManager
     mcp_client: LocalMcpClient | None
 
     def close(self) -> None:
@@ -105,6 +124,7 @@ class ApplicationRuntimeContainer:
 
         if self.mcp_client is not None:
             self.mcp_client.close()
+        _close_resource(self.memory_store)
         close = getattr(self.store, "close", None)
         if callable(close):
             close()
@@ -117,8 +137,10 @@ def build_application_container(
     *,
     planner: AgentPlanner | None = None,
     model: ModelClient | None = None,
+    response_model: ModelClient | None = None,
     store: TaskStore | None = None,
     long_task_store: LongTaskStore | None = None,
+    memory_store: MemoryStore | None = None,
     tool_registry: ToolRegistry | None = None,
     config: ApplicationBootstrapConfig | None = None,
     environ: Mapping[str, str] | None = None,
@@ -130,6 +152,7 @@ def build_application_container(
     services = build_application_runtime(
         store=store,
         long_task_store=long_task_store,
+        memory_store=memory_store,
         tool_registry=tool_registry,
         config=cfg,
         environ=environ,
@@ -147,9 +170,17 @@ def build_application_container(
         planner=resolved_planner,
         runtime=services.runtime,
     )
+    general_agent = GeneralAgent(
+        orchestrator=orchestrator,
+        response_model=response_model if response_model is not None else model,
+        intent_router=JsonIntentRouter(model) if model is not None else None,
+        memory_manager=services.memory_manager,
+        allow_auto_task_execution=cfg.allow_auto_task_execution,
+    )
     app = AgentApplication(orchestrator=orchestrator)
     return ApplicationContainer(
         app=app,
+        general_agent=general_agent,
         facade=services.facade,
         orchestrator=orchestrator,
         runtime=services.runtime,
@@ -160,6 +191,8 @@ def build_application_container(
         operator=services.operator,
         approvals=services.approvals,
         progress_reader=services.progress_reader,
+        memory_store=services.memory_store,
+        memory_manager=services.memory_manager,
         mcp_client=services.mcp_client,
     )
 
@@ -168,6 +201,7 @@ def build_application_runtime(
     *,
     store: TaskStore | None = None,
     long_task_store: LongTaskStore | None = None,
+    memory_store: MemoryStore | None = None,
     tool_registry: ToolRegistry | None = None,
     config: ApplicationBootstrapConfig | None = None,
     environ: Mapping[str, str] | None = None,
@@ -177,6 +211,7 @@ def build_application_runtime(
     cfg = config or ApplicationBootstrapConfig()
     resolved_store = store or _build_store(cfg)
     resolved_long_task_store = long_task_store or _build_long_task_store(cfg)
+    resolved_memory_store = memory_store or _build_memory_store(cfg)
     tools = tool_registry or ToolRegistry()
     mcp_client: LocalMcpClient | None = None
     try:
@@ -206,6 +241,7 @@ def build_application_runtime(
             mcp_client.close()
         _close_resource(resolved_store)
         _close_resource(resolved_long_task_store)
+        _close_resource(resolved_memory_store)
         raise
 
     runtime = HarnessRuntime(
@@ -216,6 +252,7 @@ def build_application_runtime(
     operator = OperatorService(resolved_store)
     approvals = ApprovalService(runtime)
     progress_reader = TaskProgressReader(resolved_store)
+    memory_manager = MemoryManager(resolved_memory_store)
     facade = build_harness_facade(
         tool_registry=tools,
         skill_loader=skill_loader,
@@ -231,6 +268,8 @@ def build_application_runtime(
         operator=operator,
         approvals=approvals,
         progress_reader=progress_reader,
+        memory_store=resolved_memory_store,
+        memory_manager=memory_manager,
         mcp_client=mcp_client,
     )
 
@@ -272,6 +311,12 @@ def _build_long_task_store(config: ApplicationBootstrapConfig) -> LongTaskStore:
     if config.sqlite_path is not None:
         return SqliteLongTaskStore(config.sqlite_path)
     return InMemoryLongTaskStore()
+
+
+def _build_memory_store(config: ApplicationBootstrapConfig) -> MemoryStore:
+    if config.sqlite_path is not None:
+        return SqliteMemoryStore(config.sqlite_path)
+    return InMemoryMemoryStore()
 
 
 def _close_resource(resource: object) -> None:

@@ -1,5 +1,12 @@
 """Reusable agent harness layer for re_zlagent."""
 
+from .context import (
+    ContextInput,
+    ContextManifest,
+    ContextManifestBuilder,
+    ContextSegment,
+    ContextTrust,
+)
 from .facade import (
     HarnessFacade,
     HarnessInventory,
@@ -10,6 +17,11 @@ from .facade import (
 )
 
 __all__ = [
+    "ContextInput",
+    "ContextManifest",
+    "ContextManifestBuilder",
+    "ContextSegment",
+    "ContextTrust",
     "HarnessFacade",
     "HarnessInventory",
     "HarnessRuntimeSnapshot",

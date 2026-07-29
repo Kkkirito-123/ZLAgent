@@ -9,7 +9,12 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
-from re_zlagent.harness.model import ModelClient, ModelMessage
+from re_zlagent.harness.model import (
+    ModelCallBudget,
+    ModelClient,
+    ModelMessage,
+    complete_with_budget,
+)
 from re_zlagent.harness.runtime import RuntimeToolStep
 from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract
 from re_zlagent.harness.tools import (
@@ -36,6 +41,7 @@ class JsonPlanPlanner(AgentPlanner):
         max_repair_attempts: int = 1,
         max_plan_steps: int = 32,
         max_identical_actions: int = 1,
+        token_budget: ModelCallBudget | None = None,
     ) -> None:
         if max_repair_attempts < 0 or max_repair_attempts > 2:
             raise ValueError("max_repair_attempts must be between 0 and 2")
@@ -55,6 +61,10 @@ class JsonPlanPlanner(AgentPlanner):
         self._max_repair_attempts = max_repair_attempts
         self._max_plan_steps = max_plan_steps
         self._max_identical_actions = max_identical_actions
+        self._token_budget = token_budget or ModelCallBudget(
+            max_input_tokens=16_000,
+            max_output_tokens=4_096,
+        )
 
     async def plan(self, request: AgentRunRequest) -> AgentPlan:
         request_prompt = _request_prompt(request, tool_schemas=self._tool_schemas)
@@ -65,13 +75,16 @@ class JsonPlanPlanner(AgentPlanner):
         completed_attempt = 0
         for attempt in range(self._max_repair_attempts + 1):
             completed_attempt = attempt
-            response = await self._model.complete(
+            response = await complete_with_budget(
+                self._model,
                 _planning_messages(
                     system_prompt=self._system_prompt,
                     request_prompt=request_prompt,
                     previous_content=previous_content,
                     previous_error=previous_error,
-                )
+                ),
+                budget=self._token_budget,
+                response_format="json_object",
             )
             try:
                 parsed = parse_agent_plan(
@@ -427,6 +440,9 @@ def _provider_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     usage = raw.get("usage")
     if isinstance(usage, dict):
         metadata["usage"] = dict(usage)
+    token_budget = raw.get("token_budget")
+    if isinstance(token_budget, dict):
+        metadata["token_budget"] = dict(token_budget)
     return metadata
 
 

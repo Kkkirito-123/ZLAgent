@@ -186,6 +186,12 @@ Agent orchestration:
 - `JsonPlanPlanner`
 - `AgentOrchestrator`
 - `AgentOrchestrator.submit`
+- `GeneralAgent`
+- `GeneralAgentMode`
+- `GeneralAgentResult`
+- `IntentDecision`
+- `IntentRoute`
+- `JsonIntentRouter`
 
 `ToolRegistry` enforces the supported input-schema subset before permission and
 side-effect planning. `JsonPlanPlanner` revalidates a complete plan after at
@@ -197,6 +203,8 @@ Model:
 - `ModelMessage`
 - `ModelResponse`
 - `ModelClient`
+- `ModelCallBudget`
+- `TokenBudgetExceededError`
 - `OpenAICompatibleModelClient`
 - `OpenAICompatibleModelConfig`
 
@@ -207,7 +215,9 @@ Memory:
 - `MemorySource`
 - `MemoryStore`
 - `InMemoryMemoryStore`
+- `SqliteMemoryStore`
 - `MemoryManager`
+- `MemoryCaptureResult`
 
 Skills:
 
@@ -250,6 +260,9 @@ Evals:
 - `BenchmarkCorpus`
 - `ReleaseBenchmarkRunner`
 - `ReleaseBenchmarkReport`
+- `IntentEvalCorpus`
+- `IntentEvalRunner`
+- `IntentEvalReport`
 
 Progress:
 
@@ -275,8 +288,12 @@ M17     LANDED   real task submission and execution MVP
 M18     LANDED   reliability and release gates
 M19-SKILLS LANDED controlled local non-overwriting Skill installation
 M19-MCP LANDED approved local stdio MCP lifecycle and dynamic tool adapters
-M19-M20 DEFERRED further optional migrations and safe DAG concurrency
+M19     DEFERRED remaining optional capability migrations
+M20     LOCAL    bounded read-only DAG concurrency
 M21     LANDED   root promotion and legacy closure verified from a clean checkout
+M22     LOCAL    general single-agent facade and measurable intent routing
+M23     LOCAL    context manifest, explicit memory, and branch views
+M24     LOCAL    token-bounded model I/O and mixed-request routing stress
 ```
 
 The local product MVP supports persisted submission, worker execution, approval
@@ -284,6 +301,154 @@ recovery, and verified result reads across process restart. M18 adds a versioned
 six-case release corpus, semantic and latency thresholds, Ruff, mypy, and one
 machine-readable quality command. The repository-root workflow runs the same gate
 on Python 3.11 and 3.13.
+
+## General Single-Agent Facade
+
+`GeneralAgent` is the lightweight embedding surface for CLI, IM, IDE, or service
+hosts. It keeps one facade with three request modes:
+
+- `chat` makes one ordinary model response, creates no task run, executes no
+  tools, and always reports `verified=False`.
+- `task` preserves the existing planner, runtime, checkpoint, side-effect, and
+  acceptance lifecycle. After trusted acceptance, an optional response model
+  turns bounded tool outputs into a user-facing answer. This presentation call
+  cannot change task truth.
+- `auto` calls the strict intent router and resolves `chat`, `task`, or
+  `clarify`. Chat and clarification are automatic. Routed task execution stays
+  disabled by default and requires explicit host opt-in.
+
+`build_application_container(model=...)` exposes the facade as
+`container.general_agent`. A host with its own planner can pass a separate
+`response_model`. Every request also produces a content-free
+`ContextManifest` describing source, trust, character budget, truncation, and
+estimated tokens. Explicit "remember ..." language is captured
+deterministically into the configured memory store; model-inferred silent
+memory, embeddings, RAG, and multi-agent delegation remain out of scope:
+
+```python
+from re_zlagent.harness.agent import AgentRunRequest, GeneralAgentMode
+
+result = await container.general_agent.run(
+    AgentRunRequest(
+        run_id="host-request-001",
+        user_goal="Summarize this request",
+        context={"surface": "ide"},
+    ),
+    mode=GeneralAgentMode.CHAT,
+)
+print(result.response, result.verified)
+```
+
+Conservative auto routing without automatic task execution:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  ask "Explain the checkpoint design" --mode auto
+```
+
+After reviewing router accuracy, a host may explicitly allow an auto-routed
+task to enter the same permission and acceptance path. The default remains
+gated:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . \
+  ask "Read README.md" --mode auto --auto-execute-task
+```
+
+The local CLI exposes the same facade. Chat does not require SQLite:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  ask "Explain what this Agent can do" --mode chat
+```
+
+Interactive task mode may persist its run and use configured workspace tools:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite --workspace . \
+  ask "Read README.md and summarize the implemented core" \
+  --mode task --run-id ask-readme-001
+```
+
+Both commands return compact JSON. `ok` means the request was handled; only
+`verified` means a task completed through trusted runtime acceptance. Full
+events, checkpoints, and tool payloads remain available through `status` and
+`result` instead of being copied into the assistant response.
+
+## Intent Routing Accuracy
+
+`JsonIntentRouter` is a read-only structured router for `chat`, `task`, and
+`clarify`. It calls no tools. `auto` mode uses it, but the default task gate
+prevents a routed task from executing. Model output is accepted only when it
+matches the strict route, reason-code, and clarification schema.
+
+The shipped seed corpus contains 24 balanced Chinese/English cases: eight per
+route. It is intentionally small and measures regression on clear examples,
+not production accuracy. Run it against the configured model:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  intent-eval --model "router-model"
+```
+
+The JSON report includes overall accuracy, per-route and per-language accuracy,
+invalid-output count, confusion matrix, average latency, and provider token
+usage when available. The seed target is 85%. This command requires an actual
+model configuration but does not require SQLite.
+
+On 2026-07-29, `deepseek-v4-flash` classified the packaged corpus correctly in
+24/24 cases: 100% for both languages and all three routes, with zero invalid
+outputs, 1,829 ms average latency, and 8,753 total tokens. This small clear-case
+corpus proves the integration works; it does not justify enabling automatic
+task execution by default.
+
+The separate mixed-request corpus covers negation, read-then-answer requests,
+missing pronoun targets, and read-only external actions:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli intent-eval --stress
+```
+
+With provider JSON Output and the Router budget enabled,
+`deepseek-v4-flash` classified that corpus correctly in 24/24 cases, with zero
+invalid outputs, 1,985 ms average latency, and 9,180 total tokens. Seed and
+stress reports remain separate so the clearer seed set cannot hide ambiguous
+failures.
+
+## Model Token Budgets
+
+Every model phase has a simple hard boundary:
+
+- Router: 2,048 input / 512 output tokens
+- Planner: 16,000 input / 4,096 output tokens
+- chat response: 8,192 input / 2,048 output tokens
+- accepted-task response synthesis: 8,192 input / 1,024 output tokens
+
+Input is conservatively estimated before a call. Compatible providers receive
+the phase output cap, while `ZLAGENT_MODEL_MAX_TOKENS` may impose a lower global
+ceiling. Provider usage is normalized into `token_usage.phases` and
+`token_usage.aggregate` in CLI `ask` output. A Router or Planner preflight
+failure occurs before Runtime execution; response-synthesis budget failure
+falls back to already accepted Runtime output.
+
+## Memory, Branches, and Safe DAG Batches
+
+- SQLite applications persist versioned personal memory in the same database;
+  recall remains bounded lexical search and does not require RAG.
+- Only explicit remember-language writes memory. Repeated equivalent text is
+  idempotent, and every write records its capture policy and source.
+- `branches RUN_ID` projects a read-only tree from existing fork metadata. It
+  copies no events, checkpoints, plans, or task truth.
+- `HarnessRuntime` overlaps at most four ready steps only when their registered
+  tools are independent, `SAFE`, read-only, side-effect-free, outbox-free, and
+  explicitly concurrency-safe. Mutation and confirmation steps remain linear.
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite branches run-001
+```
 
 ## Local Product CLI
 
@@ -431,6 +596,7 @@ claimable work, with `--max-ticks` preventing an unbounded foreground loop.
 - `LongTaskProjector` derives step, phase, frontier, and blocked state from append-only events, checkpoints, and pending interactions.
 - `PendingInteraction` is the durable wait point for user/operator input and carries a resume token.
 - `ContextPackBuilder` rebuilds resume context from stored state; chat history is not the source of truth.
+- `ContextManifest` makes context source and budget observable without echoing private segment content.
 - `ProgramPlan` revisions are immutable, and a run cannot change its contract or plan binding.
 - Retry, alternative-tool, and approval recovery continue every unfinished verified frontier step.
 - Alternative tools satisfy the original persisted step; they cannot replace its identity, dependencies, or verification requirements.
@@ -449,6 +615,9 @@ claimable work, with `--max-ticks` preventing an unbounded foreground loop.
 - Waiting-user, paused, cancelled, and terminal runs do not retain an active worker lease.
 - `ParkedRunScanner` classifies parked runs; it must not execute tools or mutate state.
 - `DagExecutionPolicy` gives conservative scheduling guidance; it must not schedule or execute DAG steps.
+- `HarnessRuntime` may execute one bounded batch of independent read-only concurrency-safe frontier steps; all other frontier work is linear.
+- `RunBranchTreeBuilder` projects fork lineage read-only and rejects missing or cyclic parent chains.
+- Memory writes require deterministic explicit remember-language; no model output can silently persist memory.
 - `LongTaskProgressReader` combines task progress, long-task projection, parked state, and DAG execution assessment as a read-only snapshot.
 - Long-task resume context includes contract, DAG frontier, checkpoint, open interactions, artifacts, evidence refs, recent events, and acceptance gaps.
 - Dependency-blocked steps are not executable frontier steps.
@@ -583,18 +752,17 @@ Current tests cover:
 
 ## Next Work
 
-The core migration is closed. Future product work must begin with an explicit
-roadmap decision: M19 owns bounded optional capability slices and M20 owns safe
-DAG concurrency. No deferred capability should be restored wholesale from the
-legacy tag.
+The core migration is closed. M20/M23/M24 now provide bounded read-only
+concurrency, conservative auto routing, explicit durable memory, context
+manifests, branch views, per-phase Token budgets, and seed/stress routing
+reports. Automatic task execution remains host-enabled rather than default-on;
+the next evidence gate is repeated and expanded evaluation from representative
+host traffic, not another architecture layer.
 
-M19-SKILLS provides controlled local non-overwriting installation. M19-MCP now
-provides the approved local stdio connection and dynamic tool slice. Remote
-HTTP/OAuth MCP, server installation/update, resources/prompts, deferred schema
-loading, Skill download/update/delete/execution, cron, OpenGUI, and DAG
-concurrency remain explicitly deferred. Token-aware tool discovery and schema
-loading will be evaluated as a separate later slice rather than mixed into MCP
-transport correctness.
+Remote HTTP/OAuth MCP, server installation/update, resources/prompts, deferred
+schema loading, Skill download/update/delete/execution, cron, OpenGUI, RAG,
+implicit memory mining, and multi-agent delegation remain explicitly deferred.
+No deferred capability should be restored wholesale from the legacy tag.
 
 ## Package And CLI Smoke Checks
 

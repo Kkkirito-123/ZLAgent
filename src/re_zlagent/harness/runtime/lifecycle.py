@@ -7,7 +7,8 @@ checkpoints, and acceptance before adding model planning.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -19,6 +20,7 @@ from re_zlagent.harness.tasking import (
     Checkpoint,
     CheckpointStatus,
     CriterionType,
+    DagExecutionPolicy,
     FailureDuration,
     FailureEnvelope,
     FailureType,
@@ -40,7 +42,7 @@ from re_zlagent.harness.tasking import (
     TaskRun,
     TaskRunStatus,
 )
-from re_zlagent.harness.tools import ToolRegistry, ToolResult
+from re_zlagent.harness.tools import ToolPermission, ToolRegistry, ToolResult
 
 from .context_pack import ContextPack, ContextPackBuilder
 from .outbox import (
@@ -186,7 +188,10 @@ class HarnessRuntime:
         step_verifier: StepVerifier | None = None,
         long_task_store: LongTaskStore | None = None,
         outbox_fault_injector: OutboxFaultInjector | None = None,
+        max_parallel_steps: int = 4,
     ) -> None:
+        if max_parallel_steps < 1:
+            raise ValueError("max_parallel_steps must be >= 1")
         self._store = store
         self._tools = tools
         self._acceptance_gate = acceptance_gate or AcceptanceGate()
@@ -194,12 +199,14 @@ class HarnessRuntime:
         self._resume_policy = resume_policy or ResumePolicy()
         self._step_verifier = step_verifier or StepVerifier()
         self._long_task_store = long_task_store
+        self._max_parallel_steps = max_parallel_steps
         self._outbox = SideEffectOutbox(
             long_task_store,
             fault_injector=outbox_fault_injector,
         )
         self._context_pack_builder = ContextPackBuilder(
             store,
+            dag_execution_policy=DagExecutionPolicy(),
             long_task_store=long_task_store,
         )
 
@@ -235,24 +242,47 @@ class HarnessRuntime:
         self._set_status(run_id, TaskRunStatus.RUNNING)
 
         tool_results: list[ToolResult] = []
-
-        for step in ordered_steps:
+        completed_step_ids: set[str] = set()
+        remaining = list(ordered_steps)
+        while remaining:
             stopped = self._cooperative_stop_result(run_id, tool_results)
             if stopped is not None:
                 return stopped
-            execution = await self._execute_step(
-                run_id=run_id,
-                step=step,
-                interactive=interactive,
-                idempotency_anchor=f"tool:{step.id}",
+            ready = tuple(
+                step
+                for step in remaining
+                if set(step.depends_on).issubset(completed_step_ids)
             )
-            tool_results.append(execution.result)
-            if execution.failure is not None:
+            if not ready:
+                raise RuntimeError(
+                    "validated plan has no executable DAG frontier"
+                )
+            batch = self._execution_batch(ready)
+            executions = await self._execute_batch(
+                run_id=run_id,
+                steps=batch,
+                interactive=interactive,
+                anchor_prefix="tool",
+            )
+            for step, execution in zip(batch, executions, strict=True):
+                tool_results.append(execution.result)
+                remaining.remove(step)
+                if execution.failure is None:
+                    completed_step_ids.add(step.id)
+            failure = next(
+                (
+                    execution.failure
+                    for execution in executions
+                    if execution.failure is not None
+                ),
+                None,
+            )
+            if failure is not None:
                 return self._result(
                     run_id=run_id,
                     accepted=False,
                     tool_results=tool_results,
-                    failure=execution.failure,
+                    failure=failure,
                 )
 
         stopped = self._cooperative_stop_result(run_id, tool_results)
@@ -286,7 +316,12 @@ class HarnessRuntime:
         program_plan = ProgramPlan(
             id=f"plan_{run_id}",
             contract_id=contract.id,
-            dag=PlanDAG(tuple(step.to_plan_step() for step in ordered_steps)),
+            dag=PlanDAG(
+                tuple(
+                    self._persisted_plan_step(step)
+                    for step in ordered_steps
+                )
+            ),
             metadata={
                 "model_name": model_name,
                 "prompt_version": prompt_version,
@@ -363,39 +398,51 @@ class HarnessRuntime:
             if statuses.get(step_id) == StepStatus.RUNNING.value
         )
         results: list[ToolResult] = []
-        if len(running_step_ids) > 1:
+        running_steps = tuple(
+            RuntimeToolStep.from_plan_step(
+                program_plan.step_by_id(step_id)
+            )
+            for step_id in running_step_ids
+        )
+        if (
+            len(running_steps) > 1
+            and not all(self._is_parallel_safe(step) for step in running_steps)
+        ):
             return self._fail_stalled_continuation(
                 run_id=run_id,
                 program_plan=program_plan,
                 context_pack=context_pack,
                 tool_results=results,
             )
-        if running_step_ids:
-            step = RuntimeToolStep.from_plan_step(
-                program_plan.step_by_id(running_step_ids[0])
-            )
-            execution = await self._execute_step(
+        if running_steps:
+            executions = await self._execute_batch(
                 run_id=run_id,
-                step=step,
+                steps=running_steps,
                 interactive=interactive,
-                idempotency_anchor=(
-                    f"incomplete:{context_pack.event_seq}:tool:{step.id}"
-                ),
+                anchor_prefix=f"incomplete:{context_pack.event_seq}:tool",
                 event_context={
                     "worker_recovery": self._context_pack_anchor(context_pack),
                 },
                 checkpoint_context={
-                    "recovered_incomplete_step_id": step.id,
+                    "recovered_incomplete_step_ids": list(running_step_ids),
                     "program_plan_id": program_plan.id,
                 },
             )
-            results.append(execution.result)
-            if execution.failure is not None:
+            results.extend(execution.result for execution in executions)
+            failure = next(
+                (
+                    execution.failure
+                    for execution in executions
+                    if execution.failure is not None
+                ),
+                None,
+            )
+            if failure is not None:
                 return self._result(
                     run_id=run_id,
                     accepted=False,
                     tool_results=results,
-                    failure=execution.failure,
+                    failure=failure,
                 )
         return await self._continue_remaining_plan(
             run_id=run_id,
@@ -700,7 +747,7 @@ class HarnessRuntime:
         interactive: bool,
         tool_results: list[ToolResult],
     ) -> RuntimeResult:
-        """Continue the persisted unfinished frontier through one linear path."""
+        """Continue the persisted unfinished frontier through the shared path."""
 
         results = list(tool_results)
         while True:
@@ -736,13 +783,18 @@ class HarnessRuntime:
                     tool_results=results,
                 )
 
-            step_id = context_pack.frontier_step_ids[0]
-            step = RuntimeToolStep.from_plan_step(program_plan.step_by_id(step_id))
-            execution = await self._execute_step(
+            ready = tuple(
+                RuntimeToolStep.from_plan_step(
+                    program_plan.step_by_id(step_id)
+                )
+                for step_id in context_pack.frontier_step_ids
+            )
+            batch = self._execution_batch(ready)
+            executions = await self._execute_batch(
                 run_id=run_id,
-                step=step,
+                steps=batch,
                 interactive=interactive,
-                idempotency_anchor=f"continuation:{step.id}",
+                anchor_prefix="continuation",
                 event_context={
                     "continuation": self._context_pack_anchor(context_pack),
                 },
@@ -751,14 +803,123 @@ class HarnessRuntime:
                     "continued_from_event_seq": context_pack.event_seq,
                 },
             )
-            results.append(execution.result)
-            if execution.failure is not None:
+            results.extend(execution.result for execution in executions)
+            failure = next(
+                (
+                    execution.failure
+                    for execution in executions
+                    if execution.failure is not None
+                ),
+                None,
+            )
+            if failure is not None:
                 return self._result(
                     run_id=run_id,
                     accepted=False,
                     tool_results=results,
-                    failure=execution.failure,
+                    failure=failure,
                 )
+
+    async def _execute_batch(
+        self,
+        *,
+        run_id: str,
+        steps: tuple[RuntimeToolStep, ...],
+        interactive: bool,
+        anchor_prefix: str,
+        event_context: dict[str, Any] | None = None,
+        checkpoint_context: dict[str, Any] | None = None,
+    ) -> tuple[_StepExecution, ...]:
+        if not steps:
+            raise ValueError("execution batch must contain at least one step")
+        parallel = len(steps) > 1
+        batch_context = {
+            "execution_batch": {
+                "parallel": parallel,
+                "size": len(steps),
+                "step_ids": [step.id for step in steps],
+                "policy": "read_only_concurrency_safe",
+            }
+        }
+        if event_context:
+            batch_context.update(event_context)
+        calls = tuple(
+            self._execute_step(
+                run_id=run_id,
+                step=step,
+                interactive=interactive,
+                idempotency_anchor=f"{anchor_prefix}:{step.id}",
+                event_context=batch_context,
+                checkpoint_context=checkpoint_context,
+            )
+            for step in steps
+        )
+        if not parallel:
+            return (await calls[0],)
+        return tuple(await asyncio.gather(*calls))
+
+    def _execution_batch(
+        self,
+        ready_steps: tuple[RuntimeToolStep, ...],
+    ) -> tuple[RuntimeToolStep, ...]:
+        if not ready_steps:
+            return ()
+        if not self._is_parallel_safe(ready_steps[0]):
+            return (ready_steps[0],)
+        candidates: list[RuntimeToolStep] = []
+        for step in ready_steps:
+            if not self._is_parallel_safe(step):
+                break
+            candidates.append(step)
+            if len(candidates) >= self._max_parallel_steps:
+                break
+        if len(candidates) < 2:
+            return (ready_steps[0],)
+        return tuple(candidates)
+
+    def _is_parallel_safe(self, step: RuntimeToolStep) -> bool:
+        if step.allow_confirm:
+            return False
+        tool = self._tools.get(step.tool_name)
+        if tool is None:
+            return False
+        if tool.permission is not ToolPermission.SAFE:
+            return False
+        if (
+            not tool.is_concurrency_safe
+            or tool.outbox_required
+            or bool(tool.side_effects)
+        ):
+            return False
+        try:
+            return bool(tool.is_action_read_only(step.arguments))
+        except Exception:  # noqa: BLE001 - concurrency policy fails closed
+            return False
+
+    def _persisted_plan_step(self, step: RuntimeToolStep) -> PlanStep:
+        plan_step = step.to_plan_step()
+        tool = self._tools.get(step.tool_name)
+        read_only = False
+        if tool is not None:
+            try:
+                read_only = bool(tool.is_action_read_only(step.arguments))
+            except Exception:  # noqa: BLE001 - persisted policy fails closed
+                read_only = False
+        return replace(
+            plan_step,
+            metadata={
+                **plan_step.metadata,
+                "read_only": read_only,
+                "parallel_safe": self._is_parallel_safe(step),
+                "external_side_effect": (
+                    bool(tool.side_effects) if tool is not None else False
+                ),
+                "requires_user": (
+                    tool is not None
+                    and tool.permission is ToolPermission.CONFIRM
+                ),
+            },
+        )
 
     async def _execute_step(
         self,

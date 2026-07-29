@@ -112,8 +112,26 @@ class OpenAICompatibleModelClient(ModelClient):
             self.transport = UrllibChatCompletionTransport()
 
     async def complete(self, messages: tuple[ModelMessage, ...]) -> ModelResponse:
+        return await self.complete_with_options(messages)
+
+    async def complete_with_options(
+        self,
+        messages: tuple[ModelMessage, ...],
+        *,
+        max_tokens: int | None = None,
+        response_format: str | None = None,
+    ) -> ModelResponse:
+        """Complete with an optional call-level output cap.
+
+        A client-level maximum remains a hard ceiling when both limits exist.
+        """
+
         if not messages:
             raise ValueError("messages must not be empty")
+        if max_tokens is not None and max_tokens <= 0:
+            raise ValueError("max_tokens must be positive")
+        if response_format not in {None, "json_object"}:
+            raise ValueError("unsupported response_format")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -123,8 +141,13 @@ class OpenAICompatibleModelClient(ModelClient):
         }
         if self.temperature is not None:
             payload["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            payload["max_tokens"] = self.max_tokens
+        token_limits = [
+            limit for limit in (self.max_tokens, max_tokens) if limit is not None
+        ]
+        if token_limits:
+            payload["max_tokens"] = min(token_limits)
+        if response_format is not None:
+            payload["response_format"] = {"type": response_format}
 
         headers = {"Content-Type": "application/json"}
         if self.api_key:

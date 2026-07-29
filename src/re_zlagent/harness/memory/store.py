@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Protocol
 from uuid import uuid4
@@ -138,23 +139,28 @@ class InMemoryMemoryStore:
         limit: int = 5,
         include_archived: bool = False,
     ) -> tuple[MemoryEntry, ...]:
-        terms = [term.lower() for term in (query or "").split() if term.strip()]
+        terms = _search_terms(query)
+        if not terms:
+            return ()
         candidates = self.list(include_archived=include_archived)
-        if terms:
-            candidates = tuple(
-                entry
-                for entry in candidates
-                if any(term in entry.content.lower() for term in terms)
+        scored = [
+            (
+                entry,
+                sum(term in entry.content.casefold() for term in terms),
             )
+            for entry in candidates
+        ]
+        scored = [item for item in scored if item[1] > 0]
         ranked = sorted(
-            candidates,
+            scored,
             key=lambda item: (
-                not item.pinned,
-                -item.recall_count,
-                -item.updated_at.timestamp(),
+                not item[0].pinned,
+                -item[1],
+                -item[0].recall_count,
+                -item[0].updated_at.timestamp(),
             ),
         )
-        return deepcopy(tuple(ranked[: max(1, limit)]))
+        return deepcopy(tuple(item[0] for item in ranked[: max(1, limit)]))
 
     def update(
         self,
@@ -216,3 +222,19 @@ class InMemoryMemoryStore:
         candidates.sort(key=lambda item: (item.recall_count, item.updated_at.timestamp()))
         victim = candidates[0]
         self._entries[victim.id] = victim.with_update(archived=True)
+
+
+def _search_terms(query: str) -> tuple[str, ...]:
+    """Build small lexical terms that work for both spaced text and Chinese."""
+
+    terms: dict[str, None] = {}
+    for chunk in re.findall(r"[A-Za-z0-9_]+|[\u3400-\u9fff]+", query.casefold()):
+        if len(chunk) <= 2 or chunk.isascii():
+            terms[chunk] = None
+            continue
+        if all("\u3400" <= char <= "\u9fff" for char in chunk):
+            for index in range(len(chunk) - 1):
+                terms[chunk[index : index + 2]] = None
+        else:
+            terms[chunk] = None
+    return tuple(terms)

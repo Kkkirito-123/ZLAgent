@@ -115,8 +115,11 @@
 | M19-SKILLS | `LANDED` | 增加受控本地且不覆盖的 Skill 安装。 |
 | M19-MCP | `LANDED` | 增加经过批准的本地 stdio MCP 生命周期和动态工具。 |
 | M19 | `DEFERRED` | 后续可选能力仍需逐个独立切片迁移。 |
-| M20 | `DEFERRED` | 所有前置门槛通过后启用安全 DAG 并发。 |
+| M20 | `LOCAL` | 只对独立、只读且显式并发安全的 DAG 步骤启用受限并发。 |
 | M21 | `LANDED` | 把重构提升到根目录并关闭已批准的旧迁移。 |
+| M22 | `LOCAL` | 增加通用单 Agent 门面和可测量的意图路由。 |
+| M23 | `LOCAL` | 接入受限上下文、显式记忆、分支视图和保守自动路由。 |
+| M24 | `LOCAL` | 限制模型 I/O Token，并增加混合请求路由压力证据。 |
 
 ## 6. 历史阶段
 
@@ -420,7 +423,7 @@ Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成
 
 ### M20 - 安全 DAG 并发
 
-**状态：** `DEFERRED`
+**状态：** `LOCAL`
 
 **目标：** 在不削弱任务事实和副作用安全的前提下降低延迟。
 
@@ -429,6 +432,17 @@ Wiki、Graph-RAG 和 geo 当前状态为 `REMOVED`。重新引入必须先形成
 **初始范围：** 仅允许无依赖、只读、无副作用步骤并发，并具备确定性结果合并和顺序 fallback。
 
 **退出条件：** 冲突写操作不能并发；取消和失败确定性传播；同一确定性场景下并行和顺序执行产生等价的 accepted outcome。
+
+**本地实现：** `HarnessRuntime` 根据持久化依赖计算 ready frontier，最多同时执行
+四个连续 ready 步骤；只有注册到 host 的工具同时满足 `SAFE`、只读、无副作用、
+不使用 outbox 且显式 concurrency-safe 时才允许并发。其他步骤继续确定性线性执行。
+工具结果 event 会记录 batch 身份和策略；恢复时只有仍满足同一安全谓词的多个
+in-flight 步骤才可继续。
+
+**本地证据：** 聚焦并发测试证明两个独立安全读取会真实重叠，有依赖或不安全的
+工具继续线性执行，batch metadata 具备确定性，且多个未完成并行读取只有在仍满足
+同一安全谓词时才可恢复。统一质量门在本地通过 386 项测试、6/6 release benchmark、
+compileall、Ruff、对 96 个源码文件执行的 mypy、CLI smoke 和 package dry-run。
 
 ### M21 - 迁移关闭与旧源码删除
 
@@ -476,8 +490,133 @@ tracked 文件；`re_zlagent/` 外存在 31 个修改文件、3 个 tracked 删�
 untracked 路径。已批准关闭把这些改动保存到 Git，并把活跃 index 缩减为 171 个
 tracked 文件，其中包含明确保留的 23 个 `workspace/` 文件。
 
-M21 因此满足退出门槛。当前没有自动开始的下一阶段；M19 或 M20 只能在新的产品决策
-和批准后开始。
+M21 因此满足退出门槛。关闭时没有自动开始的下一阶段；之后用户批准 M22-M24
+作为新的有界产品切片，并批准只读 M20 并发门槛；其余 M19 能力仍保持延期。
+
+### M22 - 通用单 Agent 门面
+
+**状态：** `LOCAL`
+
+**目标：** 把已经验证的 harness 暴露为小型通用 Agent，使 CLI、IM gateway、IDE
+或服务 host 可以嵌入，同时不把产品特定策略塞进 runtime。
+
+**MVP 范围：**
+
+- 由 host 显式选择 `chat` 或 `task` 模式
+- 通过同一门面提供本地 JSON `ask` 命令
+- chat 直接回答，不创建任务事实，并返回 `verified=false`
+- task 继续经过现有 planner、runtime、checkpoint、outbox 和 acceptance 生命周期
+- 可信任务验收后，可选使用受限结果进行回答合成
+- 回答模型缺失或失败时，使用确定性的 runtime 输出 fallback
+- 增加严格只读的 `chat`/`task`/`clarify` 意图决策
+- 增加版本化平衡种子集和机器可读准确率报告
+
+**不包含：** 根据意图结果自动执行、记忆写入、持久化记忆、retrieval/RAG、
+多 Agent 委派、DAG 并发和领域特定助手行为。
+
+**退出条件：**
+
+- chat 模式不执行工具，也不创建任务 run
+- CLI chat 不需要 SQLite，CLI task 可以持久化一个可检查 run
+- task 模式不存在绕过 `HarnessRuntime` 的工具执行路径
+- response model 失败不能改变已持久化任务状态或 acceptance
+- 未通过验收的任务不能显示为 verified
+- prompt context 和工具结果内容具备明确 host 上限
+- intent JSON 不能执行工具、声明完成或绕过 runtime
+- intent 报告提供整体、route 和语言准确率，以及非法输出、混淆、时延和 usage
+- 聚焦测试和完整仓库检查通过
+
+**本地证据：** 聚焦测试覆盖隔离 chat、缺少 chat model、已验证任务回答合成、
+无模型确定性 fallback、任务 accepted 后 response model 失败、验收失败时跳过回答
+合成、无 SQLite 的 CLI chat，以及通过真实受限文件读取完成并持久化的 CLI task。
+两种模式的用户效果 smoke 均通过，输出保持紧凑且不泄漏 runtime trace。统一质量门
+在本地通过 386 项测试、6/6 release benchmark、compileall、Ruff、对 96 个源码
+文件执行 mypy、CLI smoke 和 package dry-run。
+
+**已批准意图测量扩展：** 用户批准先实现能测量路由准确率的最小结构，再决定是否
+启用自动路由。该扩展只用于评估：严格 JSON Router、24 条中英文平衡种子集和
+`intent-eval` CLI。真实模型准确率必须来自明确 provider 配置，不能用脚本测试
+准确率替代。
+
+### M23 - 受限自适应单 Agent 闭环
+
+**状态：** `LOCAL`
+
+**目标：** 把已经分离的 Router、Memory、ContextPack、fork lineage 和 DAG
+安全边界组成一个容易理解的单 Agent 闭环，不增加 RAG、多 Agent 编排或第二条
+执行路径。
+
+**MVP 范围：**
+
+- 增加把请求解析为 `chat`、`task` 或 `clarify` 的 `auto` 门面模式
+- 保守的 task 路由开关；小型种子集测量不能作为生产安全门，自动 task 执行仍需
+  host 显式启用
+- 对“记住……”等请求执行确定性的显式记忆捕获，不由模型静默推断记忆
+- 通过关键词召回相关记忆，并作为有 fence 的背景上下文注入
+- 增加可观察 `ContextManifest`，记录来源、信任级别、字符预算、截断和 Token
+  估算，但 metadata 不回显私密正文
+- 从现有 fork lineage 投影只读分支树
+- 只对独立、只读且显式并发安全的工具执行受限并发
+
+**不包含：** embedding、向量库、retrieval/RAG、隐式偏好挖掘、记忆合并、多
+Agent 委派、并发副作用、并发确认步骤、分布式调度或推测执行。
+
+**退出条件：**
+
+- 显式 `chat` 和 `task` 行为保持兼容
+- `auto` 澄清不创建 run；被 gate 的 task 路由没有 host opt-in 时不能执行
+- 每次记忆写入都有显式用户语言触发和来源 metadata
+- prompt context 由受限 manifest segment 组装
+- 分支检查保持只读，并能检测断裂或循环 lineage
+- 只有独立、只读且并发安全的步骤可以重叠，其余继续线性执行
+- crash/recovery、checkpoint、outbox 和 acceptance 仍由 `HarnessRuntime` 负责
+- 聚焦测试和完整仓库质量门通过
+
+**本地证据：** 聚焦测试覆盖三种自动路由及 task 执行 gate、显式且可去重并可通过
+SQLite 持久化的记忆、无正文泄漏的上下文 metadata 与受限截断、嵌套/断裂/循环分支
+lineage，以及仅独立安全读取会真实重叠。统一质量门在本地通过 386 项测试、6/6
+release benchmark、compileall、Ruff、对 96 个源码文件执行的 mypy、CLI smoke 和
+package dry-run。2026-07-29 使用 `deepseek-v4-flash` 对随包语料执行环境实测：
+24/24 全部正确，中英文与三个 route 均为 100%，非法输出为 0，平均时延 1,829 ms，
+总 Token 8,753。该小型清晰样例集验证了集成链路，但不会移除默认 task 执行 gate。
+
+### M24 - Token 受限模型 I/O 与路由压力测试
+
+**状态：** `LOCAL`
+
+**目标：** 在 Harness 边界控制模型成本和上下文增长，不引入计费服务、provider
+锁定或另一条 Agent 循环。
+
+**MVP 范围：**
+
+- 为 Router、Planner、chat 和已验收任务的回答合成设置单次输入、输出和总 Token
+  预算
+- 使用保守调用前估算，在 provider 调用前拒绝超大输入
+- 模型适配器支持调用选项时，把输出上限真实传给 provider
+- 在 `GeneralAgentResult` 和 CLI `ask` 输出规范化的阶段与聚合 usage
+- Router 与 Planner 使用 provider JSON Output，同时保留严格 host 解析
+- 独立的 24 条平衡压力语料，覆盖否定、读取后回答、代词目标缺失和只读外部动作
+
+**不包含：** 精确 provider tokenizer 依赖、计费 ledger、配额服务、自动模型交易、
+prompt-cache 基础设施、隐藏式 prompt 压缩，或默认开启自动 task 执行。
+
+**退出条件：**
+
+- Router 或 Planner 输入超预算时，不调用 provider 或 Runtime
+- OpenAI-compatible 调用收到全局与阶段输出上限中的较小值
+- provider 报告超限或未报告 usage 的超大输出会停止后续处理
+- 结构化模型输出继续由 host 校验，不能授予权限
+- 请求输出提供规范化 usage，但不暴露 provider response payload
+- seed 与 stress 准确率报告保持独立且机器可读
+- 聚焦测试和完整仓库质量门通过
+
+**本地证据：** 聚焦测试覆盖不调用 provider 的预检拒绝、provider cap 下传、全局
+cap 优先级、usage 规范化与阶段聚合、超限拒绝、独立压力语料加载和 CLI 配置失败。
+统一质量门通过 386 项测试、6/6 release benchmark、compileall、Ruff、对 96 个源码
+文件执行的 mypy、CLI smoke 和 package dry-run。2026-07-29 使用
+`deepseek-v4-flash` JSON Output 对 24 条压力语料执行环境实测：24/24 全部正确，
+非法输出为 0，平均时延 1,985 ms，总 Token 9,180。两套小型语料不等同生产流量，
+因此 task 执行 gate 仍默认关闭。
 
 ## 8. 能力决策
 
@@ -497,7 +636,7 @@ M21 因此满足退出门槛。当前没有自动开始的下一阶段；M19 或
 | 发布评估 | `REPLACED` | 版本化语义/恢复/时延 corpus 和质量门槛 | M18 |
 | 微信、企业微信、Webhook 具体 gateway | `DEFERRED` | 当前只有标准 gateway contract 和本地 CLI；删除会移除在线 IM 入口 | 删除前产品决策 |
 | FastAPI route 和部署脚本 | `DEFERRED` | 当前 MVP 没有 HTTP 产品服务 | 删除前产品决策 |
-| durable memory 和 retrieval | `DEFERRED` | 已有 versioned in-memory 边界；durable provider/retrieval 未迁移 | M19，用户/产品负责人 |
+| durable memory 和 retrieval | `REPLACED` / `DEFERRED` | SQLite versioned memory 和关键词召回已本地实现；embedding/RAG 仍延期 | M23，用户/产品负责人 |
 | skill curator、consolidation、review、usage 生命周期 | `DEFERRED` | 受控本地且不覆盖的安装已落地；curation、更新、删除、执行和 usage 生命周期仍延后 | M19，用户/产品负责人 |
 | 本地 stdio MCP transport 和动态工具生命周期 | `REPLACED` | 精确命令批准、工具白名单、命名 credential、confirm/outbox/evidence 边界 | M19-MCP |
 | MCP 安装/更新、远程 HTTP/OAuth、resources/prompts、延迟 Schema 加载 | `DEFERRED` | 需要独立 supply-chain、auth、discovery 和 token-eval 切片 | M19，用户/产品负责人 |
@@ -506,11 +645,11 @@ M21 因此满足退出门槛。当前没有自动开始的下一阶段；M19 或
 | 代码执行、Web 搜索、delegation/subagent | `DEFERRED` | 高风险或产品特定工具需要独立 sandbox/acceptance 切片 | 用户/产品负责人 |
 | plugin、rich rendering、Redis cache、prompt cache | `DEFERRED` | 本地产品 MVP 不需要 | 用户/产品负责人 |
 | wiki、Graph-RAG、geo、travel visited-map | `REMOVED` | 已明确从当前目标移除 | 恢复时重开路线图 |
-| 默认 DAG 并发 | `DEFERRED` | 顺序语义已证明，并发必须单独评审 | M20 |
+| 受限 DAG 并发 | `REPLACED` | 仅独立、只读、concurrency-safe 工具并发；mutation 保持线性 | M20 |
 
 **删除决策已解决：** 2026-07-11 用户批准本地核心关闭、本地 snapshot commit 和
 tag、根目录提升以及不推送的 tracked 旧源码删除。Deferred 能力会继续从活跃产品
-中缺席，直到单独批准的 M19/M20 工作通过当前边界重新实现。
+中缺席，直到后续单独批准的工作通过当前边界重新实现。
 
 ## 9. 完成定义
 

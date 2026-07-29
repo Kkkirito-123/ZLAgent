@@ -162,6 +162,16 @@ class ContextPackBuilderTests(unittest.TestCase):
         self.assertEqual(pack.artifact_records[0]["ref"], "artifact://collect-summary")
         self.assertEqual(len(pack.recent_events), 2)
         self.assertEqual(pack.metadata["run_status"], "waiting_user")
+        self.assertIsNotNone(pack.manifest)
+        manifest = pack.to_dict()["context_manifest"]
+        self.assertGreater(manifest["used_chars"], 0)
+        self.assertIn(
+            "task_state",
+            [segment["id"] for segment in manifest["segments"]],
+        )
+        self.assertTrue(
+            all("content" not in segment for segment in manifest["segments"])
+        )
 
     def test_context_pack_can_load_long_task_records_from_store(self) -> None:
         long_task_store = InMemoryLongTaskStore()

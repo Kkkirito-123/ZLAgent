@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026.07.1",
+  "minimum_accuracy": 0.85,
+  "cases": [
+    {
+      "id": "chat-zh-explain-mcp",
+      "name": "Chinese concept explanation",
+      "user_input": "MCP 是什么？请简单解释一下。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "chat-zh-python-concept",
+      "name": "Chinese programming explanation",
+      "user_input": "解释一下 Python 装饰器的工作原理。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "chat-zh-brainstorm",
+      "name": "Chinese brainstorming without action",
+      "user_input": "帮我想三个通用个人助手的名字，不需要保存。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "chat-zh-generate-code",
+      "name": "Chinese code generation without workspace",
+      "user_input": "写一个判断回文的 Python 纯函数，只在回答中展示代码。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "chat-en-agent-concept",
+      "name": "English agent concept comparison",
+      "user_input": "What is the difference between a chain and an agent?",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "chat-en-context-concept",
+      "name": "English context explanation",
+      "user_input": "Explain why an agent context window can overflow.",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "chat-en-draft-only",
+      "name": "English draft without delivery",
+      "user_input": "Draft a short thank-you note, but do not send it.",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "chat-en-sqlite-concept",
+      "name": "English database concept",
+      "user_input": "How does SQLite WAL mode work?",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "task-zh-read-file",
+      "name": "Chinese workspace read",
+      "user_input": "读取 README.md 并总结其中的架构。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "task-zh-write-file",
+      "name": "Chinese workspace write",
+      "user_input": "把刚才的总结写入 notes/summary.md。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "task-zh-mcp-calendar",
+      "name": "Chinese MCP lookup",
+      "user_input": "使用已经配置的 MCP 查询我明天的日历。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "task-zh-send-message",
+      "name": "Chinese external message",
+      "user_input": "给张三发送会议确认消息。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "task-en-read-config",
+      "name": "English workspace read",
+      "user_input": "Read config.toml and list the enabled plugins.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "task-en-create-file",
+      "name": "English workspace write",
+      "user_input": "Create output.txt in the workspace containing hello.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "task-en-install-skill",
+      "name": "English capability installation",
+      "user_input": "Install the local skill package named demo.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "task-en-fetch-url",
+      "name": "English external fetch",
+      "user_input": "Fetch https://example.com and save its page title.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "clarify-zh-file-target",
+      "name": "Chinese missing file details",
+      "user_input": "把那个文件改一下。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "clarify-zh-message-details",
+      "name": "Chinese missing delivery details",
+      "user_input": "帮我发出去。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "clarify-zh-install-target",
+      "name": "Chinese missing install target",
+      "user_input": "帮我安装一下。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "clarify-zh-missing-context",
+      "name": "Chinese missing continuation context",
+      "user_input": "继续处理它。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "clarify-en-delete-target",
+      "name": "English missing delete target",
+      "user_input": "Delete it for me.",
+      "expected_route": "clarify",
+      "language": "en"
+    },
+    {
+      "id": "clarify-en-send-details",
+      "name": "English missing delivery target",
+      "user_input": "Send the report.",
+      "expected_route": "clarify",
+      "language": "en"
+    },
+    {
+      "id": "clarify-en-config-details",
+      "name": "English missing configuration details",
+      "user_input": "Update the configuration.",
+      "expected_route": "clarify",
+      "language": "en"
+    },
+    {
+      "id": "clarify-en-tool-details",
+      "name": "English missing tool and target",
+      "user_input": "Use the tool to fix it.",
+      "expected_route": "clarify",
+      "language": "en"
+    }
+  ]
+}

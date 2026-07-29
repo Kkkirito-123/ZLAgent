@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from re_zlagent.harness.context import (
+    ContextInput,
+    ContextManifest,
+    ContextManifestBuilder,
+    ContextTrust,
+)
 from re_zlagent.harness.storage import LongTaskStore, TaskStore
 from re_zlagent.harness.tasking import (
     AcceptanceCriterion,
@@ -67,6 +74,7 @@ class ContextPack:
     evidence_refs: tuple[str, ...] = field(default_factory=tuple)
     acceptance: AcceptanceContext = field(default_factory=AcceptanceContext)
     recent_events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    manifest: ContextManifest | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -107,6 +115,9 @@ class ContextPack:
             "evidence_refs": list(self.evidence_refs),
             "acceptance": self.acceptance.to_dict(),
             "recent_events": [dict(item) for item in self.recent_events],
+            "context_manifest": (
+                self.manifest.to_dict() if self.manifest is not None else None
+            ),
             "metadata": dict(self.metadata),
         }
 
@@ -121,11 +132,15 @@ class ContextPackBuilder:
         dag_execution_policy: DagExecutionPolicy | None = None,
         long_task_store: LongTaskStore | None = None,
         projector: LongTaskProjector | None = None,
+        max_context_chars: int = 8_000,
     ) -> None:
         self._store = store
         self._long_task_store = long_task_store
         self._dag_execution_policy = dag_execution_policy
         self._projector = projector or LongTaskProjector()
+        self._context_builder = ContextManifestBuilder(
+            max_chars=max_context_chars
+        )
 
     def build(
         self,
@@ -176,6 +191,77 @@ class ContextPackBuilder:
             for phase_id, phase in projection.phase_runs.items()
             if phase.status.value in {"pending", "running", "blocked", "failed"}
         )
+        pending_payload = tuple(
+            item.to_dict()
+            for item in interaction_records
+            if item.run_id == run_id and item.open
+        )
+        artifact_payload = tuple(
+            item.to_dict()
+            for item in artifacts
+            if item.run_id == run_id
+        )
+        evidence_refs = self._evidence_refs(events)
+        acceptance = self._acceptance_context(contract, events)
+        recent_events = tuple(
+            self._compact_event(event)
+            for event in events[-max_recent_events:]
+        )
+        state_payload = {
+            "current_phase_ids": current_phase_ids,
+            "frontier_step_ids": projection.frontier_step_ids,
+            "completed_step_ids": projection.completed_step_ids,
+            "failed_step_ids": projection.failed_step_ids,
+            "blocked_step_ids": projection.blocked_step_ids,
+        }
+        manifest = self._context_builder.build(
+            (
+                self._context_input(
+                    id="task_identity",
+                    source="task_store",
+                    content={
+                        "run_id": run_id,
+                        "contract_id": contract.id,
+                        "program_plan_id": program_plan.id,
+                        "user_goal": contract.user_goal,
+                    },
+                    max_chars=1_500,
+                ),
+                self._context_input(
+                    id="task_state",
+                    source="runtime_projection",
+                    content=state_payload,
+                    max_chars=1_500,
+                ),
+                self._context_input(
+                    id="pending_interactions",
+                    source="long_task_store",
+                    content=pending_payload,
+                    max_chars=1_500,
+                ),
+                self._context_input(
+                    id="artifacts_and_evidence",
+                    source="runtime_evidence",
+                    content={
+                        "artifacts": artifact_payload,
+                        "evidence_refs": evidence_refs,
+                    },
+                    max_chars=1_500,
+                ),
+                self._context_input(
+                    id="acceptance",
+                    source="acceptance_gate",
+                    content=acceptance.to_dict(),
+                    max_chars=1_000,
+                ),
+                self._context_input(
+                    id="recent_events",
+                    source="task_event_log",
+                    content=recent_events,
+                    max_chars=2_000,
+                ),
+            )
+        )
         return ContextPack(
             run_id=run_id,
             contract_id=contract.id,
@@ -188,22 +274,12 @@ class ContextPackBuilder:
             completed_step_ids=projection.completed_step_ids,
             failed_step_ids=projection.failed_step_ids,
             blocked_step_ids=projection.blocked_step_ids,
-            pending_interactions=tuple(
-                item.to_dict()
-                for item in interaction_records
-                if item.run_id == run_id and item.open
-            ),
-            artifact_records=tuple(
-                item.to_dict()
-                for item in artifacts
-                if item.run_id == run_id
-            ),
-            evidence_refs=self._evidence_refs(events),
-            acceptance=self._acceptance_context(contract, events),
-            recent_events=tuple(
-                self._compact_event(event)
-                for event in events[-max_recent_events:]
-            ),
+            pending_interactions=pending_payload,
+            artifact_records=artifact_payload,
+            evidence_refs=evidence_refs,
+            acceptance=acceptance,
+            recent_events=recent_events,
+            manifest=manifest,
             metadata={
                 "run_status": run.status.value,
                 "model_name": run.model_name,
@@ -214,6 +290,27 @@ class ContextPackBuilder:
                 },
                 "dag_execution": dag_execution,
             },
+        )
+
+    @staticmethod
+    def _context_input(
+        *,
+        id: str,
+        source: str,
+        content: Any,
+        max_chars: int,
+    ) -> ContextInput:
+        return ContextInput(
+            id=id,
+            source=source,
+            trust=ContextTrust.RUNTIME_STATE,
+            content=json.dumps(
+                content,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ),
+            max_chars=max_chars,
         )
 
     def _pending_interactions(

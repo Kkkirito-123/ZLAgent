@@ -238,6 +238,57 @@ src/re_zlagent/harness/agent/
   AgentOrchestrator
   AgentOrchestrator.submit
 
+Current local M22 slice:
+
+src/re_zlagent/harness/agent/
+  GeneralAgent
+  GeneralAgentMode
+  GeneralAgentResult
+  IntentDecision
+  IntentRoute
+  JsonIntentRouter
+
+src/re_zlagent/harness/evals/
+  IntentEvalCorpus
+  IntentEvalRunner
+  IntentEvalReport
+
+src/re_zlagent/app/
+  run_cli ask
+  run_cli intent-eval
+
+Current local M20/M23/M24 slice:
+
+src/re_zlagent/harness/
+  ContextManifest
+  ContextManifestBuilder
+
+src/re_zlagent/harness/agent/
+  GeneralAgentMode.AUTO
+
+src/re_zlagent/harness/memory/
+  MemoryCaptureResult
+  SqliteMemoryStore
+
+src/re_zlagent/harness/runtime/
+  RunBranchTree
+  RunBranchTreeBuilder
+  bounded read-only DAG batches
+
+src/re_zlagent/app/
+  run_cli branches
+
+src/re_zlagent/harness/model/
+  ModelCallBudget
+  TokenBudgetExceededError
+  complete_with_budget
+
+src/re_zlagent/harness/evals/corpora/
+  intent-routing-stress-v1.json
+
+src/re_zlagent/app/
+  run_cli intent-eval --stress
+
 src/re_zlagent/harness/model/
   ModelMessage
   ModelResponse
@@ -341,7 +392,9 @@ Important semantics:
 - Long-task recovery context should preserve contract, DAG frontier, latest checkpoint, open interactions, artifact refs, evidence refs, recent events, and acceptance gaps.
 - Retry, alternative-tool, and approval recovery must re-enter one continuation path driven by a persisted `ContextPack` and execute every remaining verified frontier step.
 - Alternative tools execute as the original persisted step identity and cannot weaken its dependencies or verification requirements.
-- Durable workers and product adapters must route execution through `HarnessRuntime`; automatic replan and parallel DAG execution remain separate later stages.
+- Durable workers and product adapters must route execution through
+  `HarnessRuntime`; automatic replan remains a separate later stage, while only
+  M20-approved independent read-only DAG batches may overlap.
 - Runtime emits `plan_step_started` and `plan_step_verified` events around tool execution.
 - Stage verification failure stops the run before final acceptance and records `step_verification_failed`.
 - Failure envelopes classify perturbations with `visibility`, `duration`, and `perturbation_class`.
@@ -381,10 +434,27 @@ Important semantics:
 - `OpenAICompatibleModelConfig` stores only non-secret settings and resolves the API key from an explicitly named environment variable.
 - Model-supplied freshness timestamps are rejected; freshness must come from trusted runtime tools.
 - `AgentOrchestrator` is a thin bridge from planner output into `HarnessRuntime`.
+- `GeneralAgent` is a presentation and embedding boundary above
+  `AgentOrchestrator`; it never executes tools or changes acceptance truth.
+- General-agent chat responses create no task run and are never marked verified.
+- General-agent task responses may summarize bounded runtime output only after
+  the existing runtime lifecycle has decided acceptance.
+- CLI `ask` is an adapter over `GeneralAgent`; it must not introduce another
+  planning, tool-execution, or acceptance path.
+- `JsonIntentRouter` is read-only classification. It must not execute requests,
+  select permissions, write memory, or assert task acceptance.
+- Intent evaluation uses a versioned labeled corpus and reports accuracy,
+  confusion, invalid output, latency, and usage without mutating task state.
+- `auto` routing may resolve chat and clarification directly. A routed task may
+  enter `HarnessRuntime` only when the host explicitly enables
+  `allow_auto_task_execution`; the default remains disabled until real-model
+  routing accuracy is measured.
 - `GatewayAdapter` only sends normalized outbound messages.
 - `AgentApplication` maps gateway messages into agent requests and formats results; it does not execute tools or decide acceptance.
 - `ApplicationDispatcher` sends app output through a `GatewayAdapter`; delivery failures are returned as data.
-- `build_application_container` assembles store, tools, runtime, planner, orchestrator, app, operator, approvals, progress reader, and facade.
+- `build_application_container` assembles task, long-task, and memory stores,
+  tools, runtime, planner, router, orchestrator, app, operator, approvals,
+  progress reader, and facade.
 - `build_application_runtime` assembles worker/operator services without requiring a planner or model after a plan has been persisted.
 - `LocalTaskAdapter` exposes JSON-compatible submit, status, work, approval, and persisted result reads without creating a second execution path.
 - A local result is verified only when persisted acceptance is true and the run projection is completed.
@@ -392,7 +462,31 @@ Important semantics:
 - App bootstrap requires an explicit planner or model; it must not silently pretend an LLM exists.
 - `ApplicationContainer.close()` closes owned adapters that expose a `close` method.
 - `MemoryStore` owns versioned durable memory entries.
-- `MemoryManager` builds fenced memory context and strips fake memory-context tags from untrusted text.
+- `SqliteMemoryStore` is the local durable memory adapter and may share the
+  configured application SQLite file through its own connection.
+- `MemoryManager` builds fenced relevant context, strips fake memory-context
+  tags, and writes only from deterministic explicit remember-language.
+- Model-inferred silent memory writes, embedding recall, and RAG remain
+  forbidden until separately approved.
+- `ContextManifest` records context source, trust, character budget,
+  truncation, and token estimate; reader-facing metadata must omit segment
+  content.
+- `ModelCallBudget` owns per-call input, output, and total Token ceilings.
+  Router and Planner over-budget failures must occur before Runtime execution.
+- OpenAI-compatible adapters must enforce the lower of their global output
+  ceiling and the phase ceiling; generic adapters still require preflight and
+  post-call validation.
+- Router and Planner may request provider JSON Output, but their content remains
+  untrusted until the existing strict host parser validates it.
+- CLI `ask` may expose normalized phase and aggregate Token usage, but must not
+  expose provider response payloads, prompts, or credentials.
+- Seed and stress intent corpora remain separate. Neither small corpus is
+  sufficient evidence to enable automatic task execution by default.
+- `RunBranchTreeBuilder` is a read-only projection over fork metadata; it must
+  not copy events, checkpoints, plans, or mutable state between branches.
+- Runtime concurrency may overlap only independent `SAFE` tools that are
+  read-only, side-effect-free, outbox-free, and explicitly concurrency-safe.
+  Confirmation, mutation, MCP, message, and Skill installation stay linear.
 - `FileSystemSkillLoader` reads Hermes `SKILL.md` and legacy `skill.yaml + instructions.md`.
 - `SkillGuard` statically classifies safe, caution, and dangerous skill text.
 - `LocalSkillInstaller` accepts only bounded local packages, refuses overwrite

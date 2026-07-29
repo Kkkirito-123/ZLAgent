@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026.07.stress.1",
+  "minimum_accuracy": 0.85,
+  "cases": [
+    {
+      "id": "stress-chat-zh-tool-explanation",
+      "name": "Chinese tool explanation with no execution",
+      "user_input": "解释如何使用 read_file 工具，只讲原理，不要读取任何文件。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "stress-chat-zh-draft-not-send",
+      "name": "Chinese draft without delivery",
+      "user_input": "帮我草拟一封请假邮件，但不要发送。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "stress-chat-zh-state-comparison",
+      "name": "Chinese state-store comparison",
+      "user_input": "比较 SQLite 和 Redis 用于 Agent 状态的优缺点。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "stress-chat-zh-example-diff",
+      "name": "Chinese example diff without workspace action",
+      "user_input": "给我一段修改 README 标题的示例 diff，不要操作工作区。",
+      "expected_route": "chat",
+      "language": "zh"
+    },
+    {
+      "id": "stress-chat-en-inspection-explanation",
+      "name": "English inspection explanation with no access",
+      "user_input": "Explain how you would inspect a config file, but do not access my workspace.",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "stress-chat-en-draft-not-send",
+      "name": "English draft without delivery",
+      "user_input": "Draft a Slack update, but do not send it.",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "stress-chat-en-capability-comparison",
+      "name": "English capability comparison",
+      "user_input": "Compare MCP and skills for a personal assistant.",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "stress-chat-en-example-code",
+      "name": "English file-code example without action",
+      "user_input": "Show example Python code that writes a file, without creating one.",
+      "expected_route": "chat",
+      "language": "en"
+    },
+    {
+      "id": "stress-task-zh-read-and-explain",
+      "name": "Chinese read followed by explanation",
+      "user_input": "读取 README.md，然后用两句话解释项目做什么。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "stress-task-zh-inspect-no-write",
+      "name": "Chinese inspection with explicit no-write",
+      "user_input": "检查 pyproject.toml 是否声明了 mcp 依赖，不要修改。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "stress-task-zh-write-summary",
+      "name": "Chinese explicit workspace write",
+      "user_input": "把这段总结写入 notes/summary.md：Harness 负责约束 Agent 运行。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "stress-task-zh-mcp-read",
+      "name": "Chinese read-only MCP action",
+      "user_input": "调用已配置的日历 MCP 查看明天的日程，只读。",
+      "expected_route": "task",
+      "language": "zh"
+    },
+    {
+      "id": "stress-task-en-read-and-decide",
+      "name": "English read followed by decision",
+      "user_input": "Open README.md and tell me whether automatic task execution is enabled.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "stress-task-en-inspect-tests",
+      "name": "English test inspection",
+      "user_input": "Inspect the tests and identify the file covering checkpoint recovery.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "stress-task-en-create-note",
+      "name": "English explicit workspace write",
+      "user_input": "Create notes/todo.md with three harness follow-ups.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "stress-task-en-mail-read",
+      "name": "English read-only connected mail action",
+      "user_input": "Use the connected mail tool to list unread subjects; do not send anything.",
+      "expected_route": "task",
+      "language": "en"
+    },
+    {
+      "id": "stress-clarify-zh-send-pronouns",
+      "name": "Chinese message with missing target and content",
+      "user_input": "把它发给他。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "stress-clarify-zh-config-pronoun",
+      "name": "Chinese config action with missing target",
+      "user_input": "帮我修改那个配置。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "stress-clarify-zh-skill-pronoun",
+      "name": "Chinese skill install with missing identity",
+      "user_input": "安装刚才说的 skill。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "stress-clarify-zh-continue-missing-run",
+      "name": "Chinese continuation with missing run",
+      "user_input": "继续执行剩下的步骤。",
+      "expected_route": "clarify",
+      "language": "zh"
+    },
+    {
+      "id": "stress-clarify-en-send-pronouns",
+      "name": "English message with missing target and content",
+      "user_input": "Send it to them.",
+      "expected_route": "clarify",
+      "language": "en"
+    },
+    {
+      "id": "stress-clarify-en-config-pronoun",
+      "name": "English config action with missing target",
+      "user_input": "Update the config.",
+      "expected_route": "clarify",
+      "language": "en"
+    },
+    {
+      "id": "stress-clarify-en-skill-pronoun",
+      "name": "English skill install with missing identity",
+      "user_input": "Install that skill.",
+      "expected_route": "clarify",
+      "language": "en"
+    },
+    {
+      "id": "stress-clarify-en-continue-missing-run",
+      "name": "English continuation with missing run",
+      "user_input": "Continue the failed task.",
+      "expected_route": "clarify",
+      "language": "en"
+    }
+  ]
+}

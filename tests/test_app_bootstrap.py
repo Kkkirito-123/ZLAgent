@@ -12,7 +12,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from re_zlagent.app import ApplicationBootstrapConfig, build_application_container  # noqa: E402
 from re_zlagent.gateway import DeliveryTarget, IncomingMessage  # noqa: E402
-from re_zlagent.harness.agent import AgentPlan, StaticAgentPlanner  # noqa: E402
+from re_zlagent.harness.agent import (  # noqa: E402
+    AgentPlan,
+    AgentRunRequest,
+    StaticAgentPlanner,
+)
 from re_zlagent.harness.runtime import RuntimeToolStep  # noqa: E402
 from re_zlagent.harness.tasking import AcceptanceCriterion, CriterionType, TaskContract  # noqa: E402
 from re_zlagent.harness.tools import (  # noqa: E402
@@ -85,6 +89,12 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
             )
 
             result = await container.app.handle_message(self._message())
+            general_result = await container.general_agent.run(
+                AgentRunRequest(
+                    run_id="general-agent-bootstrap",
+                    user_goal="bootstrap general task",
+                )
+            )
             inventory = container.facade.inventory().to_dict()
             runtime = container.facade.runtime().to_dict()
             operator_snapshot = container.operator.status("missing-run").to_dict()
@@ -93,6 +103,7 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
             container.close()
 
         self.assertTrue(result.agent_result.accepted)
+        self.assertTrue(general_result.verified)
         self.assertEqual(result.outgoing.metadata["status"], "completed")
         self.assertEqual(inventory["counts"]["tools"], 3)
         self.assertTrue(runtime["components"]["tool_registry"])
