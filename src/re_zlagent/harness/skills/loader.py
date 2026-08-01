@@ -17,7 +17,7 @@ class SkillLoadError(Exception):
 
 
 class FileSystemSkillLoader:
-    """Load Hermes and legacy skill manifests from a workspace directory."""
+    """Load Agent Skills and legacy manifests from a workspace directory."""
 
     def __init__(
         self,
@@ -60,7 +60,7 @@ class FileSystemSkillLoader:
             return None
         body_path = self._resolve_inside_root(manifest.body_path)
         raw = body_path.read_text(encoding="utf-8")
-        if manifest.format is SkillFormat.HERMES:
+        if manifest.format is SkillFormat.AGENT_SKILLS:
             match = _FRONTMATTER_RE.match(raw)
             return (match.group(2) if match else raw).strip()
         return raw.strip()
@@ -94,14 +94,14 @@ class FileSystemSkillLoader:
     def _load_one(self, folder: Path) -> SkillManifest | None:
         skill_md = folder / "SKILL.md"
         if skill_md.is_file():
-            return self._load_hermes(skill_md, folder)
+            return self._load_agent_skill(skill_md, folder)
         skill_yaml = folder / "skill.yaml"
         instructions = folder / "instructions.md"
         if skill_yaml.is_file() and instructions.is_file():
             return self._load_legacy(skill_yaml, instructions, folder)
         return None
 
-    def _load_hermes(self, skill_md: Path, folder: Path) -> SkillManifest:
+    def _load_agent_skill(self, skill_md: Path, folder: Path) -> SkillManifest:
         skill_md = self._resolve_inside_root(skill_md)
         raw = skill_md.read_text(encoding="utf-8")
         match = _FRONTMATTER_RE.match(raw)
@@ -114,9 +114,11 @@ class FileSystemSkillLoader:
             version=str(meta.get("version") or "0.1.0"),
             tags=tuple(meta.get("tags") or ()),
             triggers=tuple(meta.get("triggers") or ()),
-            format=SkillFormat.HERMES,
+            format=SkillFormat.AGENT_SKILLS,
             root=folder,
             body_path=skill_md,
+            license=_optional_text(meta.get("license")),
+            compatibility=_optional_text(meta.get("compatibility")),
             metadata=meta,
         )
 
@@ -193,3 +195,10 @@ def _strip_quotes(value: str) -> str:
     ):
         return value[1:-1]
     return value
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

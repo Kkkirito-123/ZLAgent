@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,15 @@ from re_zlagent.harness.agent import (  # noqa: E402
 )
 from re_zlagent.harness.model import ModelMessage, ModelResponse  # noqa: E402
 from re_zlagent.harness.memory import InMemoryMemoryStore, MemoryManager  # noqa: E402
+from re_zlagent.harness.conversation import (  # noqa: E402
+    ConversationManager,
+    InMemoryConversationStore,
+)
 from re_zlagent.harness.runtime import HarnessRuntime, RuntimeToolStep  # noqa: E402
+from re_zlagent.harness.skills import (  # noqa: E402
+    FileSystemSkillLoader,
+    SkillSelector,
+)
 from re_zlagent.harness.storage import InMemoryTaskStore  # noqa: E402
 from re_zlagent.harness.tasking import (  # noqa: E402
     AcceptanceCriterion,
@@ -158,6 +167,79 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
                 AgentRunRequest(run_id="chat-1", user_goal="hello"),
                 mode="chat",
             )
+
+    async def test_named_session_injects_previous_complete_turn(self) -> None:
+        orchestrator, _ = self._runtime_graph()
+        model = RecordingModel(
+            ModelResponse(content="先确定去上海。"),
+            ModelResponse(content="可以住在人民广场附近。"),
+        )
+        store = InMemoryConversationStore()
+        agent = GeneralAgent(
+            orchestrator=orchestrator,
+            response_model=model,
+            conversation_manager=ConversationManager(store),
+        )
+
+        first = await agent.run(
+            AgentRunRequest(
+                run_id="chat-session-1",
+                session_id="travel-session",
+                user_goal="我准备去上海玩",
+            ),
+            mode="chat",
+        )
+        second = await agent.run(
+            AgentRunRequest(
+                run_id="chat-session-2",
+                session_id="travel-session",
+                user_goal="住哪里方便？",
+            ),
+            mode="chat",
+        )
+
+        self.assertNotIn('<turn sequence="1">', model.calls[0][1].content)
+        self.assertIn("我准备去上海玩", model.calls[1][1].content)
+        self.assertIn("先确定去上海", model.calls[1][1].content)
+        self.assertTrue(first.response_metadata["conversation"]["recorded"])
+        self.assertEqual(
+            second.response_metadata["conversation"]["loaded_context"][
+                "recent_turn_count"
+            ],
+            1,
+        )
+        manifest = second.context_manifest.to_dict()
+        self.assertIn(
+            "recent_conversation",
+            [segment["id"] for segment in manifest["segments"]],
+        )
+        self.assertNotIn("我准备去上海玩", str(manifest))
+        self.assertEqual(len(store.list_turns("travel-session")), 2)
+
+    async def test_requests_without_session_remain_stateless(self) -> None:
+        orchestrator, _ = self._runtime_graph()
+        model = RecordingModel(
+            ModelResponse(content="第一条回答"),
+            ModelResponse(content="第二条回答"),
+        )
+        store = InMemoryConversationStore()
+        agent = GeneralAgent(
+            orchestrator=orchestrator,
+            response_model=model,
+            conversation_manager=ConversationManager(store),
+        )
+
+        await agent.run(
+            AgentRunRequest(run_id="stateless-1", user_goal="秘密代号是海鸥"),
+            mode="chat",
+        )
+        await agent.run(
+            AgentRunRequest(run_id="stateless-2", user_goal="代号是什么？"),
+            mode="chat",
+        )
+
+        self.assertNotIn("秘密代号是海鸥", model.calls[1][1].content)
+        self.assertEqual(store.list_turns("unused-session"), ())
 
     async def test_task_preserves_runtime_acceptance_then_synthesizes(self) -> None:
         orchestrator, store = self._runtime_graph(content="trusted runtime output")
@@ -407,6 +489,72 @@ class GeneralAgentTests(unittest.IsolatedAsyncioTestCase):
             [segment["id"] for segment in manifest["segments"]],
         )
         self.assertNotIn("我喜欢简洁的报告", str(manifest))
+
+    async def test_selected_skill_is_bounded_and_visible_in_context_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = root / "code-review"
+            unrelated = root / "deploy"
+            review.mkdir()
+            unrelated.mkdir()
+            (review / "SKILL.md").write_text(
+                "---\n"
+                "id: code-review\n"
+                "name: Code Review\n"
+                "description: 审查代码\n"
+                "triggers: [审查代码]\n"
+                "---\n"
+                "先读取差异，再运行相关测试。\n",
+                encoding="utf-8",
+            )
+            (unrelated / "SKILL.md").write_text(
+                "---\n"
+                "id: deploy\n"
+                "name: Deploy\n"
+                "description: 部署服务\n"
+                "triggers: [部署服务]\n"
+                "---\n"
+                "执行生产部署。\n",
+                encoding="utf-8",
+            )
+            loader = FileSystemSkillLoader(root)
+            loader.load()
+            orchestrator, _ = self._runtime_graph()
+            model = RecordingModel(ModelResponse(content="审查建议"))
+            router = StaticIntentRouter(
+                IntentDecision(
+                    route=IntentRoute.CHAT,
+                    reason_code=IntentReasonCode.DIRECT_ANSWER,
+                )
+            )
+            agent = GeneralAgent(
+                orchestrator=orchestrator,
+                response_model=model,
+                intent_router=router,
+                skill_selector=SkillSelector(loader),
+            )
+
+            result = await agent.run(
+                AgentRunRequest(run_id="skill-chat", user_goal="请审查代码"),
+                mode="auto",
+            )
+
+        prompt = model.calls[0][1].content
+        self.assertIn("先读取差异", prompt)
+        self.assertNotIn("执行生产部署", prompt)
+        self.assertIn("先读取差异", result.request.context["selected_skills"])
+        self.assertNotIn("先读取差异", str(router.calls[0].context))
+        skill_segment = next(
+            segment
+            for segment in result.context_manifest.to_dict()["segments"]
+            if segment["id"] == "selected_skills"
+        )
+        self.assertEqual(skill_segment["source"], "skill_store")
+        self.assertEqual(
+            skill_segment["metadata"]["selected"][0]["id"],
+            "code-review",
+        )
+        self.assertNotIn("先读取差异", str(result.context_manifest.to_dict()))
 
 
 if __name__ == "__main__":

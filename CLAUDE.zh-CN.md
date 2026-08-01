@@ -173,18 +173,26 @@ app/gateway -> HarnessFacade
 - `model/`：模型 provider adapter
 - `memory/`：持久 memory 和 prompt context
 - `mcp/`：host 批准的本地 stdio MCP 配置、SDK 生命周期和动态工具适配
-- `skills/`：只读 skill loader、安全扫描和受控本地安装生命周期
+- `skills/`：只读 skill loader、元数据优先选择、安全扫描、受控本地/GitHub 安装
+  生命周期和来源锁
 - `observability/`：trace、doctor、support bundle
 - `evals/`：benchmark runner 和 health monitor
 - `evals/` 同时包含版本化 release corpus、语义/恢复/时延门槛
+- `evals/` 还包含 JSON manifest、逐行中文 JSONL 案例、效果评分 runner 和真实边界
+  执行适配器；它与阻断发布的 release corpus 分离
 - `progress/`：任务进度和长任务进度快照
 - `tools/`：工具协议、权限、内置文件/消息/URL 工具
-- `tools/builtins/skill_tools.py`：必须确认并经过 outbox 的本地 Skill 安装工具
+- `tools/builtins/skill_tools.py`：必须确认并经过 outbox 的本地 Skill 安装工具，以及
+  host 显式开启的 GitHub-only 安装工具
 - `tools/schema_validation.py`：运行时工具参数校验和受支持 schema 边界
 
-受控 Skill 安装只接受配置好的本地导入目录；禁止路径逃逸和符号链接，危险文本
-会被阻断，相同内容按幂等重放处理，不同内容冲突时不得覆盖。当前不包含网络下载、
-Skill 执行、更新或删除。
+受控本地 Skill 安装只接受配置好的导入目录；禁止路径逃逸和符号链接，危险文本会被
+阻断，相同内容按幂等重放处理，不同内容冲突时不得覆盖。GitHub 安装必须由 host
+显式开启，只接受固定 GitHub host，把 ref 固定到 commit，并在 `skills.lock.json`
+记录来源和摘要；压缩包路径穿越、链接、特殊文件、非标准 manifest 和超限内容必须
+fail closed。两种安装都不得执行 Skill 脚本、安装依赖、自动更新或删除。Skill 正文
+只能在元数据命中且再次通过扫描后按需进入有界低信任 Context Manifest；未命中正文
+不得产生 prompt Token。
 
 本地 MCP 只接受 host 明确批准的精确 stdio 命令和精确工具白名单；credential 只能
 通过环境变量名解析。所有动态 MCP 工具保持 confirm-tier、retry-unsafe 和
@@ -209,6 +217,12 @@ Schema 加载不属于当前切片。本地 subprocess 仍以调用者权限运�
 - run 的 contract 和 plan 绑定不可变；存储 adapter 必须拒绝跨 contract plan 和重新绑定。
 - `PendingInteraction` 是用户/操作员等待点，必须绑定 checkpoint 和 resume token。
 - `ContextPackBuilder` 从 `TaskStore`、artifact 和 pending interaction 重建上下文。
+- 命名会话只属于展示层上下文，不是长任务事实。每轮必须以完整的“用户 + 助手”原子
+  记录；本地保留最近 32 轮热数据，请求最多临时注入 12 轮/3,000 Token，并在阈值
+  到达后把旧前缀压缩为 append-only 滚动摘要，目标保留最近 8 轮，摘要不超过 800
+  Token。
+- 会话摘要和近期轮次均为低信任背景。压缩失败必须保留原始轮次，不能改变已完成回复
+  或 Runtime 验收事实。
 - retry、alternative-tool 和 approval 必须回到同一 continuation 路径，由持久化 `ContextPack` 驱动并执行全部剩余可验证 frontier step。
 - 替代工具必须使用原持久化 step identity，不能弱化依赖或验证要求。
 - `LongTaskStore` 存储 pending interaction、artifact、side effect，不替代 `TaskStore`。
@@ -240,6 +254,16 @@ Schema 加载不属于当前切片。本地 subprocess 仍以调用者权限运�
 - 可信 runtime acceptance facts 必须保存为 append-only event，避免重启改变验收事实。
 - 每个任务契约必须至少包含一个 required acceptance criterion。
 - `TaskStore.save_contract` 按 contract id 不可变：完全相同内容可以幂等重放，不同内容必须使用新 id。
+- 项目效果 Benchmark 使用 JSON manifest 和可按行定位的中文 JSONL 场景。执行适配器
+  可以经过真实 Harness 边界，但评分 runner 只能观察返回事实，不能决定 Runtime 验收。
+- 每个效果 case 必须声明稳定 capability ID；轨道最小数量和必需能力覆盖必须与
+  manifest 一致，缺少任一必需能力时加载失败。
+- provider 任务 case 必须经过 Planner 和 Runtime；只有 run 已完成、预期工具证据
+  齐全、验收引用覆盖这些证据且误完成数为 0，才计为任务完成。
+- Planner Token 用量必须累计所有受限修复调用；报告应把 case 通过率、任务完成率、
+  长任务完成率和 Token 用量分开。
+- 标记为 `pilot` 的效果语料只证明 Schema 和执行器可用，不能直接作为简历指标。正式
+  指标必须冻结 corpus 版本，看到失败后不得修改同一版本案例再重新宣称通过。
 
 ## 6. 当前存储基线
 
@@ -298,6 +322,7 @@ compile、Ruff、mypy、CLI smoke 和 package validation。Benchmark 只能观�
 - `src/re_zlagent/harness/agent/`
 - `src/re_zlagent/harness/model/`
 - `src/re_zlagent/harness/memory/`
+- `src/re_zlagent/harness/conversation/`
 - `src/re_zlagent/harness/mcp/`
 - `src/re_zlagent/harness/skills/`
 - `src/re_zlagent/harness/observability/`
@@ -316,6 +341,8 @@ python -m pip install -e '.[dev]'
 PYTHONPATH=src python -m re_zlagent.check
 PYTHONPATH=src python -m unittest discover -s tests
 PYTHONPATH=src python -m re_zlagent.benchmark --pretty
+PYTHONPATH=src python -m re_zlagent.effectiveness_benchmark --validate-only
+PYTHONPATH=src python -m re_zlagent.effectiveness_benchmark --deterministic-only
 ruff check src tests
 mypy src/re_zlagent
 python -m compileall src tests

@@ -137,6 +137,7 @@ Every stage must preserve these invariants:
 | M17 | `LANDED` | Deliver a real task submission and execution MVP. |
 | M18 | `LANDED` | Add CI, benchmarks, fault injection, and latency/reliability gates. |
 | M19-SKILLS | `LANDED` | Add controlled local, non-overwriting Skill installation. |
+| M19-SKILLS-GITHUB | `LOCAL` | Add opt-in pinned GitHub Agent Skill installation and provenance locks. |
 | M19-MCP | `LANDED` | Add approved local stdio MCP lifecycle and dynamic tools. |
 | M19 | `DEFERRED` | Migrate any further optional capability one bounded slice at a time. |
 | M20 | `LOCAL` | Enable bounded concurrency only for independent read-only, concurrency-safe DAG steps. |
@@ -144,6 +145,7 @@ Every stage must preserve these invariants:
 | M22 | `LOCAL` | Add a general single-agent facade and measurable intent routing. |
 | M23 | `LOCAL` | Connect bounded context, explicit memory, branch views, and conservative auto routing. |
 | M24 | `LOCAL` | Bound model I/O tokens and add mixed-request routing stress evidence. |
+| M25 | `LOCAL` | Add lightweight named conversation sessions and rolling compaction. |
 
 ## 6. Historical Stages
 
@@ -477,17 +479,34 @@ non-overwriting install. It declares a deterministic filesystem intent, runs
 through the durable outbox, returns structured evidence, refreshes read-only
 inventory, and treats byte-identical content as an idempotent crash replay.
 
-**M19-SKILLS non-scope:** network or repository download, Skill execution,
-curation, update, delete, dependency installation, MCP, and remote registries.
+**Approved extension M19-SKILLS-GITHUB (`LOCAL`):** an explicit host flag adds a
+second confirm-tier tool limited to GitHub repositories. It parses a bounded
+repository/ref/subpath source, resolves the ref to a full commit SHA, downloads
+a size-limited ZIP from fixed GitHub hosts, rejects traversal, links, special
+files, oversized trees, nonstandard manifests, and dangerous text, then reuses
+the atomic local installer. `skills.lock.json` records the resolved revision,
+validated tree digest, scan verdict, and source. Identical outbox replay verifies
+that lock and installed digest without another network request. Installed Skill
+metadata is scored before body loading; at most two matched, safe bodies enter a
+bounded low-trust Context Manifest segment.
+
+**M19-SKILLS remaining non-scope:** arbitrary remote registries, Skill script
+execution, curation, automatic update, delete, dependency installation, and MCP.
 MCP was not included in the Skill change and required the separately approved
 slice below.
 
-**M19-SKILLS evidence:** focused tests cover Hermes and legacy packages,
+**M19-SKILLS evidence:** focused tests cover Agent Skills and legacy packages,
 approval, structured evidence, path/symlink rejection, manifest/source stability,
 dangerous text, package limits, conflict preservation, identical replay,
 inventory refresh, and dispatch-crash recovery. The unified quality gate passes
 328 tests, the 6/6 release benchmark, compileall, Ruff, mypy over 85 source
 files, CLI smoke checks, and package dry-run locally.
+
+**M19-SKILLS-GITHUB local evidence:** focused tests cover GitHub-only source
+parsing, immutable revision evidence, standard manifest requirements, archive
+traversal/symlink rejection, dangerous-text rejection, provenance lock writing,
+network-free idempotent replay, explicit tool confirmation, opt-in bootstrap,
+and progressive selection that excludes irrelevant or dangerous Skill bodies.
 
 **Approved slice M19-MCP (`LANDED`):** the host can load a fail-closed JSON
 configuration for explicitly approved local stdio commands, exact per-server
@@ -678,6 +697,8 @@ loop without adding RAG, multi-agent orchestration, or another execution path.
 - deterministic explicit-memory capture for requests such as "remember ...";
   no model-inferred silent memory
 - relevant keyword recall injected as fenced background context
+- metadata-first installed-Skill selection with at most two safe, bounded bodies
+  injected as low-trust background; unmatched bodies consume no prompt budget
 - an observable `ContextManifest` with source, trust, character budget,
   truncation, and token estimate, without echoing private content in metadata
 - a read-only branch tree projected from existing fork lineage
@@ -696,6 +717,8 @@ speculative execution.
   executes without the host opt-in
 - every memory write has an explicit user-language trigger and source metadata
 - prompt context is assembled from bounded manifest segments
+- selected Skill ids, scores, digests, truncation, and scan verdicts are visible
+  in content-free manifest metadata
 - branch inspection is read-only and detects broken or cyclic lineage
 - only independent read-only concurrency-safe steps overlap; all other steps
   remain linear
@@ -758,6 +781,80 @@ checks, and package dry-run. An environment-backed
 corpus correctly in 24/24 cases, with zero invalid outputs, 1,985 ms average
 latency, and 9,180 total tokens. The task-execution gate remains default-off
 because two small corpora are not production traffic.
+
+**Approved project-effectiveness evidence extension (`LOCAL`):** a separate
+Chinese pilot corpus now describes resume-relevant evidence across intent
+routing, Harness reliability, memory/context, DAG/Token behavior, and real-model
+task execution. A JSON manifest freezes corpus metadata and 28 required
+capabilities; 70 line-addressable JSONL cases produce 105 repeated observations,
+and loading fails if any required capability has no case. Injected adapters
+exercise real Runtime, storage, memory, context, concurrency, token-budget,
+real-router, and Planner-to-Runtime boundaries. The 12 task cases contain 1-6
+ordered evidence steps; completion requires trusted runtime acceptance, complete
+expected evidence, matching acceptance refs, and zero false completion. The
+runner reports case pass rate separately from task/long-task completion and
+aggregates total, average, P95, and maximum Planner Token use. It remains an
+observer and never becomes acceptance authority. `pilot` is not a resume-ready
+accuracy claim; promotion requires freezing the corpus before final measurement.
+Local evidence passes 66/66 deterministic observations and the 12/12 release
+gate. On 2026-07-30, `deepseek-v4-flash` passed the provider-backed task pilot in
+12/12 cases, including 10/10 long tasks, with zero false completions and zero
+planner repairs. Planner usage was 21,164 total tokens, 1,763.7 average, and
+2,442 P95/maximum. An earlier 11/12 diagnostic run exposed ambiguous array-field
+repair feedback; field-qualified validation errors and explicit JSON array
+constraints corrected the defect without deleting or changing the failing case.
+The same model passed the 27 repeated real-router observations in 27/27 after a
+26/27 diagnostic run exposed over-clarification for a write request whose path
+and source content were already available. Clarifying the Router boundary fixed
+the policy without changing that case. Intent usage was 13,238 tokens (490.3
+average); all independently executed tracks therefore pass 105/105 observations,
+with 34,402 tokens across the two provider-backed tracks. The current unified
+quality gate passes 420 tests, 12/12 release cases, compileall, Ruff, mypy over
+108 source files, every CLI smoke check, and package dry-run.
+
+### M25 - Lightweight conversation sessions
+
+**Status:** `LOCAL`
+
+**Objective:** Give the general single Agent useful multi-turn continuity while
+keeping chat context lightweight, optional, observable, and strictly separate
+from durable long-task truth.
+
+**MVP scope:**
+
+- an explicit optional `session_id`; requests without it remain stateless
+- atomic user/assistant turns with in-memory and SQLite adapters
+- 32 hot raw turns, a target of eight recent turns, and a four-turn reduction
+  threshold buffer
+- a 3,000-Token recent-turn ceiling and an 800-Token rolling-summary ceiling
+- append-only compaction entries that merge the previous summary with the next
+  contiguous older-turn prefix
+- content-free session and compaction facts in `ContextManifest` and response
+  metadata
+- durable CLI conversation reuse across process reopen
+
+**Not in scope:** chat history as task truth, automatic memory writes, embeddings,
+RAG, vector storage, branchable chat trees, multi-agent communication, exact
+provider tokenizers, or task amendment while another run is executing.
+
+**Exit gate:**
+
+- two requests with the same session can resolve references from the previous
+  complete turn; requests without a session remain stateless
+- the twelfth pending turn compacts the oldest prefix and leaves eight recent
+  atomic turns
+- a second compaction merges the previous summary instead of discarding it
+- summary failure preserves raw turns and cannot fail the completed user response
+- SQLite reopen reconstructs the same recent context and compaction prefix
+- Chinese context uses the conservative non-ASCII Token estimate
+- focused tests and the full repository quality gate pass
+
+**Local evidence:** focused tests cover raw retention, SQLite reopen, round- and
+Token-triggered compaction, previous-summary merge, failure fallback, stateless
+compatibility, GeneralAgent injection, content-free manifests, and CLI process
+reopen. The unified quality gate passes 415 tests, the 6/6 release benchmark,
+compileall, Ruff, mypy over 107 source files, all CLI smoke checks, and package
+dry-run locally.
 
 ## 8. Capability Decisions
 

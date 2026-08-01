@@ -31,6 +31,12 @@ class BenchmarkKind(str, Enum):
     OUTBOX_CRASH_REPLAY = "outbox_crash_replay"
     SQLITE_APPROVAL_RESTART = "sqlite_approval_restart"
     EXPIRED_LEASE_RECLAIM = "expired_lease_reclaim"
+    MULTI_RETRY_CONTINUATION = "multi_retry_continuation"
+    SQLITE_FRONTIER_RESTART = "sqlite_frontier_restart"
+    ALTERNATIVE_TOOL_CONTINUATION = "alternative_tool_continuation"
+    MIDDLE_APPROVAL_CONTINUATION = "middle_approval_continuation"
+    RETRY_BUDGET_DEAD_LETTER = "retry_budget_dead_letter"
+    COOPERATIVE_CANCEL = "cooperative_cancel"
 
 
 MetricValue = bool | int | float | str

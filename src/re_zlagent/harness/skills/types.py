@@ -11,7 +11,10 @@ from typing import Any
 class SkillFormat(str, Enum):
     """Supported skill file formats."""
 
-    HERMES = "hermes"
+    # Keep the historical serialized value so existing inventories remain
+    # compatible while exposing the ecosystem-standard name to new callers.
+    AGENT_SKILLS = "hermes"
+    HERMES = AGENT_SKILLS
     LEGACY = "legacy"
 
 
@@ -23,9 +26,11 @@ class SkillManifest:
     name: str
     description: str = ""
     version: str = "0.1.0"
+    license: str | None = None
+    compatibility: str | None = None
     tags: tuple[str, ...] = field(default_factory=tuple)
     triggers: tuple[str, ...] = field(default_factory=tuple)
-    format: SkillFormat = SkillFormat.HERMES
+    format: SkillFormat = SkillFormat.AGENT_SKILLS
     root: Path | None = None
     body_path: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

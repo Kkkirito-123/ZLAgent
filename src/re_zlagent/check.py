@@ -178,6 +178,15 @@ def build_steps(
                 "--help",
             ),
         ),
+        CheckStep(
+            name="effectiveness-benchmark-help",
+            command=(
+                sys.executable,
+                "-m",
+                "re_zlagent.effectiveness_benchmark",
+                "--help",
+            ),
+        ),
     ]
     if not skip_package:
         steps.append(

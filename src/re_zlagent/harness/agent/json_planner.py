@@ -13,6 +13,7 @@ from re_zlagent.harness.model import (
     ModelCallBudget,
     ModelClient,
     ModelMessage,
+    aggregate_token_usage,
     complete_with_budget,
 )
 from re_zlagent.harness.runtime import RuntimeToolStep
@@ -41,6 +42,7 @@ class JsonPlanPlanner(AgentPlanner):
         max_repair_attempts: int = 1,
         max_plan_steps: int = 32,
         max_identical_actions: int = 1,
+        required_evidence_refs: Sequence[str] = (),
         token_budget: ModelCallBudget | None = None,
     ) -> None:
         if max_repair_attempts < 0 or max_repair_attempts > 2:
@@ -49,6 +51,13 @@ class JsonPlanPlanner(AgentPlanner):
             raise ValueError("max_plan_steps must be positive")
         if max_identical_actions <= 0:
             raise ValueError("max_identical_actions must be positive")
+        normalized_required_refs = tuple(
+            item.strip() for item in required_evidence_refs
+        )
+        if any(not item for item in normalized_required_refs):
+            raise ValueError("required_evidence_refs must contain non-empty text")
+        if len(normalized_required_refs) != len(set(normalized_required_refs)):
+            raise ValueError("required_evidence_refs must be unique")
         self._model = model
         self._system_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
         self._tool_schemas = (
@@ -61,6 +70,7 @@ class JsonPlanPlanner(AgentPlanner):
         self._max_repair_attempts = max_repair_attempts
         self._max_plan_steps = max_plan_steps
         self._max_identical_actions = max_identical_actions
+        self._required_evidence_refs = normalized_required_refs
         self._token_budget = token_budget or ModelCallBudget(
             max_input_tokens=16_000,
             max_output_tokens=4_096,
@@ -73,6 +83,7 @@ class JsonPlanPlanner(AgentPlanner):
         response = None
         parsed = None
         completed_attempt = 0
+        attempt_usage: list[Any] = []
         for attempt in range(self._max_repair_attempts + 1):
             completed_attempt = attempt
             response = await complete_with_budget(
@@ -86,6 +97,7 @@ class JsonPlanPlanner(AgentPlanner):
                 budget=self._token_budget,
                 response_format="json_object",
             )
+            attempt_usage.append(response.raw.get("usage"))
             try:
                 parsed = parse_agent_plan(
                     response.content,
@@ -95,9 +107,7 @@ class JsonPlanPlanner(AgentPlanner):
                 break
             except (PlanParseError, ValueError) as exc:
                 failure = (
-                    exc
-                    if isinstance(exc, PlanParseError)
-                    else PlanParseError(str(exc))
+                    exc if isinstance(exc, PlanParseError) else PlanParseError(str(exc))
                 )
                 if attempt >= self._max_repair_attempts:
                     if isinstance(exc, PlanParseError):
@@ -114,12 +124,16 @@ class JsonPlanPlanner(AgentPlanner):
             id=f"contract_{request.run_id}",
             user_goal=request.user_goal,
         )
+        provider_metadata = _provider_metadata(response.raw)
+        aggregate_usage = aggregate_token_usage(*attempt_usage)
+        if aggregate_usage:
+            provider_metadata["usage"] = aggregate_usage
         metadata = {
             "planner": "json",
             "proposed_contract_id": proposed_contract_id,
             "plan_attempts": completed_attempt + 1,
             "repair_attempts": completed_attempt,
-            **_provider_metadata(response.raw),
+            **provider_metadata,
         }
         return AgentPlan(
             contract=contract,
@@ -133,6 +147,7 @@ class JsonPlanPlanner(AgentPlanner):
                 f"plan has {len(plan.steps)} steps; maximum is {self._max_plan_steps}"
             )
         if self._tool_names is None:
+            self._validate_required_evidence(plan)
             self._validate_identical_actions(plan)
             return
         unknown = sorted({step.tool_name for step in plan.steps} - self._tool_names)
@@ -148,7 +163,24 @@ class JsonPlanPlanner(AgentPlanner):
                     f"step {step.id} arguments do not match {step.tool_name} schema: "
                     + "; ".join(str(issue) for issue in issues)
                 )
+        self._validate_required_evidence(plan)
         self._validate_identical_actions(plan)
+
+    def _validate_required_evidence(self, plan: AgentPlan) -> None:
+        if not self._required_evidence_refs:
+            return
+        accepted_refs = {
+            ref
+            for criterion in plan.contract.required_criteria()
+            if criterion.type is CriterionType.TOOL_EVIDENCE
+            for ref in criterion.evidence_refs
+        }
+        missing = sorted(set(self._required_evidence_refs).difference(accepted_refs))
+        if missing:
+            raise PlanParseError(
+                "required tool_evidence acceptance criteria are missing exact "
+                "evidence refs: " + ", ".join(missing)
+            )
 
     def _validate_identical_actions(self, plan: AgentPlan) -> None:
         signatures = [_action_signature(step) for step in plan.steps]
@@ -210,9 +242,13 @@ def _parse_contract(value: Any, *, fallback_goal: str) -> TaskContract:
     return TaskContract(
         id=_require_str(value, "id"),
         user_goal=user_goal.strip(),
-        stakeholders=tuple(_as_str_list(value.get("stakeholders"))),
-        mvp_scope=tuple(_as_str_list(value.get("mvp_scope"))),
-        out_of_scope=tuple(_as_str_list(value.get("out_of_scope"))),
+        stakeholders=tuple(
+            _as_str_list(value.get("stakeholders"), "contract.stakeholders")
+        ),
+        mvp_scope=tuple(_as_str_list(value.get("mvp_scope"), "contract.mvp_scope")),
+        out_of_scope=tuple(
+            _as_str_list(value.get("out_of_scope"), "contract.out_of_scope")
+        ),
         acceptance_criteria=criteria,
         capability_boundaries=_as_object(
             value.get("capability_boundaries"),
@@ -240,12 +276,19 @@ def _parse_criterion(value: Any) -> AcceptanceCriterion:
     required = value.get("required", True)
     if not isinstance(required, bool):
         raise PlanParseError("criterion.required must be a boolean")
+    evidence_refs = tuple(
+        _as_str_list(value.get("evidence_refs"), "criterion.evidence_refs")
+    )
+    if required and criterion_type is CriterionType.TOOL_EVIDENCE and not evidence_refs:
+        raise PlanParseError(
+            "required tool_evidence criterion must include evidence_refs"
+        )
     return AcceptanceCriterion(
         id=_require_str(value, "id"),
         description=_require_str(value, "description"),
         type=criterion_type,
         required=required,
-        evidence_refs=tuple(_as_str_list(value.get("evidence_refs"))),
+        evidence_refs=evidence_refs,
         freshness_window_seconds=freshness,
         metadata=_as_object(value.get("metadata"), "criterion.metadata"),
     )
@@ -284,8 +327,13 @@ def _parse_step(value: Any) -> RuntimeToolStep:
         title=title,
         expected_output=expected_output,
         verification=verification,
-        depends_on=tuple(_as_str_list(value.get("depends_on"))),
-        required_evidence_refs=tuple(_as_str_list(value.get("required_evidence_refs"))),
+        depends_on=tuple(_as_str_list(value.get("depends_on"), "step.depends_on")),
+        required_evidence_refs=tuple(
+            _as_str_list(
+                value.get("required_evidence_refs"),
+                "step.required_evidence_refs",
+            )
+        ),
     )
 
 
@@ -303,15 +351,15 @@ def _require_str(data: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
-def _as_str_list(value: Any) -> list[str]:
+def _as_str_list(value: Any, field_name: str) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise PlanParseError("expected a list of strings")
+        raise PlanParseError(f"{field_name} must be an array of strings")
     out: list[str] = []
     for item in value:
         if not isinstance(item, str):
-            raise PlanParseError("expected a list of strings")
+            raise PlanParseError(f"{field_name} must be an array of strings")
         if item.strip():
             out.append(item.strip())
     return out
@@ -454,7 +502,14 @@ _DEFAULT_SYSTEM_PROMPT = (
     "human_approval, freshness, or no_regression. steps is an ordered array whose "
     "items require id and tool_name and may contain arguments, title, "
     "expected_output, verification, depends_on, and required_evidence_refs. "
-    "Evidence refs must name deterministic evidence expected from runtime tools. "
+    "A required tool_evidence criterion must include a non-empty evidence_refs "
+    "array. When the user names exact evidence refs, copy every exact ref into "
+    "the required tool_evidence acceptance criteria. Evidence refs must name "
+    "deterministic evidence expected from runtime tools. verification and "
+    "expected_output must be JSON strings when present; omit them rather than "
+    "using an object or array. stakeholders, mvp_scope, out_of_scope, "
+    "evidence_refs, depends_on, and required_evidence_refs must be JSON arrays "
+    "of strings when present. "
     "Arguments must satisfy each tool input_schema. Do not repeat an identical "
     "tool action. Keep the plan bounded and include only necessary steps. "
     "Never claim execution evidence, passed tests, user approvals, or freshness. "

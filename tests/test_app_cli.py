@@ -394,6 +394,61 @@ class AppCliTests(unittest.TestCase):
         self.assertEqual(recalled["response"], "以后会保持简洁。")
         self.assertIn("我喜欢简洁的报告", second_model.calls[0][1].content)
 
+    def test_named_conversation_session_persists_after_cli_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "tasks.sqlite"
+            first_model = CliResponseQueueModel("建议先确定上海行程天数。")
+            first_code, first = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "ask",
+                    "我准备去上海玩",
+                    "--mode",
+                    "chat",
+                    "--session-id",
+                    "travel-session",
+                ],
+                model=first_model,
+            )
+            second_model = CliResponseQueueModel("可以住在人民广场附近。")
+            second_code, second = self._run_json(
+                [
+                    "--sqlite",
+                    str(db_path),
+                    "ask",
+                    "住哪里方便？",
+                    "--mode",
+                    "chat",
+                    "--session-id",
+                    "travel-session",
+                ],
+                model=second_model,
+            )
+
+        self.assertEqual(first_code, 0)
+        self.assertEqual(first["session_id"], "travel-session")
+        self.assertTrue(first["response_metadata"]["conversation"]["recorded"])
+        self.assertEqual(second_code, 0)
+        self.assertIn("我准备去上海玩", second_model.calls[0][1].content)
+        self.assertIn("建议先确定上海行程天数", second_model.calls[0][1].content)
+        self.assertEqual(
+            second["response_metadata"]["conversation"]["loaded_context"][
+                "recent_turn_count"
+            ],
+            1,
+        )
+
+    def test_cli_session_requires_sqlite(self) -> None:
+        code, data = self._run_json(
+            ["ask", "你好", "--session-id", "session-1"],
+            model=CliResponseQueueModel("不会调用"),
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(data["error"]["type"], "invalid_arguments")
+        self.assertIn("--sqlite", data["error"]["message"])
+
     def test_ask_task_executes_runtime_and_returns_verified_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

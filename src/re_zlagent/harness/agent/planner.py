@@ -19,12 +19,22 @@ class AgentRunRequest:
     model_name: str | None = None
     prompt_version: str | None = None
     interactive: bool = True
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():
             raise ValueError("request.run_id must be non-empty")
         if not self.user_goal.strip():
             raise ValueError("request.user_goal must be non-empty")
+        if self.session_id is not None:
+            session_id = self.session_id.strip()
+            if not session_id:
+                raise ValueError("request.session_id must be non-empty when set")
+            if len(session_id) > 200:
+                raise ValueError("request.session_id must be at most 200 chars")
+            if any(ord(char) < 32 for char in session_id):
+                raise ValueError("request.session_id must not contain control chars")
+            object.__setattr__(self, "session_id", session_id)
         object.__setattr__(self, "context", dict(self.context))
 
 

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "corpus_version": "2026.07.zh.pilot.1",
+  "language": "zh-CN",
+  "status": "pilot",
+  "description_zh": "面向 ZLAgent 项目证据的中文效果基准，以可机器校验的能力矩阵覆盖任务真值、长任务恢复、工具扩展、记忆上下文、并发和 Token 控制。",
+  "required_tracks": [
+    "intent_routing",
+    "harness_reliability",
+    "memory_context",
+    "dag_token",
+    "agent_task"
+  ],
+  "minimum_cases_by_track": {
+    "intent_routing": 9,
+    "harness_reliability": 23,
+    "memory_context": 19,
+    "dag_token": 7,
+    "agent_task": 12
+  },
+  "required_capabilities": [
+    "acceptance_truth",
+    "alternative_tool",
+    "app_persistence",
+    "branch_tree",
+    "checkpoint_restart",
+    "context_manifest",
+    "contract_immutability",
+    "conversation_context",
+    "cooperative_control",
+    "dag_concurrency",
+    "general_agent_facade",
+    "human_approval",
+    "intent_routing",
+    "long_task_continuation",
+    "mcp",
+    "memory_system",
+    "observability",
+    "outbox_idempotency",
+    "planner_guardrails",
+    "progress",
+    "real_model_task_execution",
+    "retry_budget",
+    "sandbox_boundary",
+    "skills",
+    "storage_durability",
+    "token_budget",
+    "tool_contracts",
+    "worker_lease"
+  ]
+}

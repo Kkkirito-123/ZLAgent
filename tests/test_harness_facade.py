@@ -85,6 +85,8 @@ class HarnessFacadeTests(unittest.TestCase):
                     "name: Demo Skill",
                     "description: Test skill",
                     "version: 1.2.3",
+                    "license: Apache-2.0",
+                    "compatibility: Requires git",
                     "tags: [demo, test]",
                     "triggers:",
                     "- demo",
@@ -102,6 +104,8 @@ class HarnessFacadeTests(unittest.TestCase):
         self.assertEqual(data["counts"]["skills"], 1)
         self.assertEqual(data["skills"][0]["id"], "demo-skill")
         self.assertEqual(data["skills"][0]["format"], "hermes")
+        self.assertEqual(data["skills"][0]["license"], "Apache-2.0")
+        self.assertEqual(data["skills"][0]["compatibility"], "Requires git")
         self.assertEqual(data["skills"][0]["tags"], ["demo", "test"])
 
     def test_runtime_snapshot_reports_component_presence(self) -> None:

@@ -25,6 +25,7 @@ dev = [
 zlagent = "re_zlagent.app.cli:main"
 re-zlagent-check = "re_zlagent.check:main"
 re-zlagent-benchmark = "re_zlagent.benchmark:main"
+re-zlagent-effectiveness = "re_zlagent.effectiveness_benchmark:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -33,7 +34,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"re_zlagent.harness.evals" = ["corpora/*.json"]
+"re_zlagent.harness.evals" = ["corpora/*.json", "corpora/*.jsonl"]
 
 [tool.ruff]
 target-version = "py311"

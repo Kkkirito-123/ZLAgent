@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from math import ceil
 from typing import Any, Iterable
+
+from re_zlagent.harness.model import estimate_text_tokens
 
 
 class ContextTrust(str, Enum):
@@ -71,7 +72,7 @@ class ContextSegment:
             "trust": self.trust.value,
             "original_chars": self.original_chars,
             "included_chars": self.included_chars,
-            "estimated_tokens": ceil(self.included_chars / 4),
+            "estimated_tokens": estimate_text_tokens(self.content),
             "truncated": self.truncated,
             "metadata": dict(self.metadata),
         }
@@ -103,10 +104,7 @@ class ContextManifest:
 
     @property
     def estimated_tokens(self) -> int:
-        return sum(
-            ceil(segment.included_chars / 4)
-            for segment in self.segments
-        )
+        return sum(estimate_text_tokens(segment.content) for segment in self.segments)
 
     @property
     def truncated(self) -> bool:

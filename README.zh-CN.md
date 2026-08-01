@@ -177,7 +177,10 @@ namespace，但仓库本身已经提升到根目录。
 - `FileSystemSkillLoader`
 - `SkillGuard`
 - `LocalSkillInstaller`
+- `GitHubSkillInstaller`
+- `SkillSelector`
 - `InstallSkillTool`
+- `InstallGitHubSkillTool`
 
 MCP：
 
@@ -202,6 +205,10 @@ MCP：
 - `IntentEvalCorpus`
 - `IntentEvalRunner`
 - `IntentEvalReport`
+- `EffectivenessCorpus`
+- `EffectivenessBenchmarkRunner`
+- `EffectivenessReport`
+- `ProjectEffectivenessExecutors`
 - `TaskProgressReader`
 - `LongTaskProgressReader`
 
@@ -220,6 +227,7 @@ M16     LANDED   持久 worker 所有权和重试预算
 M17     LANDED   真实任务提交与执行 MVP
 M18     LANDED   可靠性和发布门槛
 M19-SKILLS LANDED 受控本地且不覆盖的 Skill 安装
+M19-SKILLS-GITHUB LOCAL 显式开启、固定版本的 GitHub Skill 安装和按需选择
 M19-MCP LANDED 已批准的本地 stdio MCP 生命周期和动态工具适配
 M19     DEFERRED 其余可选能力迁移
 M20     LOCAL    受限只读 DAG 并发
@@ -227,12 +235,14 @@ M21     LANDED   根目录提升与旧迁移关闭已通过全新 checkout 验�
 M22     LOCAL    通用单 Agent 门面和可测量意图路由
 M23     LOCAL    Context Manifest、显式记忆和分支视图
 M24     LOCAL    Token 受限模型 I/O 和混合请求路由压力测试
+M25     LOCAL    轻量命名会话和滚动上下文压缩
 ```
 
 本地产品 MVP 已支持持久化提交、worker 执行、批准恢复，以及跨进程重启读取
-已验证结果。M18 已增加版本化 6-case release corpus、语义和时延阈值、Ruff、
-mypy 和统一机器可读质量命令。仓库根 `.github/workflows/quality.yml` 会在 Python
-3.11 和 3.13 上运行同一门槛。
+已验证结果。release corpus 现有 12 个案例，新增多次重试继续、持久化 DAG 前沿
+重启、替代工具恢复、中途审批、重试预算死信和协作取消，并同时报告基于证据的
+任务完成率、长任务完成率和恢复成功率。仓库根 `.github/workflows/quality.yml` 会在
+Python 3.11 和 3.13 上运行同一门槛。
 
 ## 通用单 Agent 门面
 
@@ -251,7 +261,14 @@ mypy 和统一机器可读质量命令。仓库根 `.github/workflows/quality.ym
 自带 planner 的 host 可以单独传入 `response_model`。每个请求还会产生不含正文的
 `ContextManifest`，说明上下文来源、信任级别、字符预算、截断和 Token 估算。
 显式“记住……”语言会通过确定性规则写入配置的 MemoryStore；模型静默推断记忆、
-embedding、RAG 和多 Agent 委派仍不在范围内：
+embedding、RAG 和多 Agent 委派仍不在范围内。可选 `session_id` 提供轻量多轮
+连续性：本地保留 32 轮原文，受限窗口最多临时放入 12 个完整近期轮次，达到阈值后
+把最旧前缀压缩为 append-only 滚动摘要，并以最近 8 轮为目标。会话上下文只是
+低信任展示数据，不会替代持久任务的 checkpoint 或 `ContextPack`。配置托管 Skill
+目录后，
+`SkillSelector` 先只根据 manifest 元数据打分，最多读取两个命中的指令正文，跳过
+危险命中，并把有界选择记录到同一份 Context Manifest；未命中的 Skill 不产生正文
+上下文或 prompt Token，已选择的正文也不会进入意图路由调用：
 
 ```python
 from re_zlagent.harness.agent import AgentRunRequest, GeneralAgentMode
@@ -288,6 +305,15 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 ```bash
 PYTHONPATH=src python -m re_zlagent.app.cli \
   ask "说明这个 Agent 能做什么" --mode chat
+```
+
+命名 CLI 会话使用 SQLite，使后续进程可以重新打开同一上下文：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  ask "我准备去上海玩" --mode chat \
+  --session-id personal-chat
 ```
 
 交互式 task 模式可以持久化 run，并使用已配置的 workspace 工具：
@@ -334,6 +360,50 @@ PYTHONPATH=src python -m re_zlagent.app.cli intent-eval --stress
 启用 provider JSON Output 和 Router 预算后，`deepseek-v4-flash` 对该语料实测
 24/24 全部正确，非法输出为 0，平均时延 1,985 ms，总 Token 9,180。seed 与 stress
 报告保持分离，避免清晰样例掩盖歧义请求失败。
+
+## 中文项目效果 Benchmark
+
+用于简历证据的效果 Benchmark 与阻断发布的 release corpus 分离。全局清单使用
+JSON，测试案例使用 JSONL，因此每个中文场景都可以独立审查、追加和定位失败：
+
+```text
+effectiveness-v1.manifest.json   版本、语言、测试轨道和能力覆盖矩阵
+effectiveness-v1.cases.jsonl     每行一个独立中文场景
+runner 输出                      JSON、逐结果 JSONL 或 Markdown
+```
+
+随包 pilot 当前包含 70 个中文案例、共 105 次重复观测，覆盖意图路由、Harness
+可靠性、Memory/Context、DAG/Token，以及 12 个真实模型任务。每个 case 都声明
+稳定的 capability ID；任一必需能力没有测试覆盖时，manifest 校验会直接失败。
+`pilot` 只表示协议和执行器可用，不表示当前数字已经可以直接写入简历。无需调用
+模型即可校验冻结结构和 28 项能力矩阵：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.effectiveness_benchmark --validate-only --pretty
+```
+
+下面的命令会通过真实 Runtime、存储、记忆、上下文、DAG 和模型预算边界运行
+66 次确定性观测：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.effectiveness_benchmark \
+  --deterministic-only --output-format markdown
+```
+
+运行全部轨道需要与 `intent-eval` 相同的真实模型配置。意图执行器只观察
+`JsonIntentRouter`，不会调用工具。`agent_task` 轨道要求真实 Planner 生成 1 至
+6 步中文计划，再通过 `HarnessRuntime` 执行无副作用的 benchmark 证据工具。只有
+run 已完成、预期证据齐全、验收合同覆盖全部证据、顺序和依赖正确且误完成数为 0，
+才计为任务完成。报告将 case 通过率、任务/长任务完成率分开，并统计 Planner 的
+总计、平均、P95 和最大 Token。报告可以输出为 `json`、`jsonl` 或 `markdown`。
+正式把数字写入简历前，应冻结 corpus 版本，并保证看到失败后不修改同一版本案例。
+
+2026-07-30 使用 `deepseek-v4-flash` 完成 `agent_task` pilot 实测：12/12 case
+通过，任务完成 12/12、长任务完成 10/10、误完成 0、Planner 修复 0 次；Planner
+总计消耗 21,164 Token，平均 1,763.7，P95 和最大值均为 2,442。这是一次受控 pilot
+结果，不等同生产环境成功率。同一模型对 27 次重复意图观测取得 27/27，消耗
+13,238 Token（平均 490.3）。加上 66/66 本地确定性观测，三个独立执行轨道共覆盖
+105/105 次观测；两条 provider 轨道合计消耗 34,402 Token。
 
 ## 模型 Token 预算
 
@@ -408,7 +478,7 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 ```
 
 受控本地 Skill 安装需要显式启用。创建彼此独立的导入目录和托管目录，把一个
-Hermes `SKILL.md` 或 legacy 包放入导入目录，并在可能规划或执行 `install_skill`
+Agent Skills `SKILL.md` 或 legacy 包放入导入目录，并在可能规划或执行 `install_skill`
 的每个 `submit`、`work`、`approve` 进程中同时传入两个目录：
 
 ```bash
@@ -421,8 +491,25 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 ```
 
 `source_path` 始终相对于配置好的导入目录。安装必须显式批准，会阻断符号链接、
-路径逃逸和危险文本，也绝不覆盖不同内容。网络下载、Skill 执行、更新、删除、
-依赖安装不属于 Skill 切片；MCP 作为下面的独立切片交付。
+路径逃逸和危险文本，也绝不覆盖不同内容。
+
+GitHub 安装是使用同一托管目录的独立 host 开关：
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --skills-dir .zlagent/skills \
+  --allow-github-skill-install \
+  submit run-skill-remote-001 \
+  "从 owner/repo@main#skills/demo 安装 demo"
+```
+
+`install_github_skill` 只接受 `https://github.com/...` 或
+`owner/repo@ref#subpath`，必须人工确认；它会把 ref 解析为完整 commit SHA，校验标准
+`SKILL.md`，只解压有界普通文件树，复用不覆盖的本地 installer，并把来源记录到
+`skills.lock.json`。outbox 重放会核对锁定 commit 和摘要，不再进行第二次下载。
+`GITHUB_TOKEN` 只用于可选 API 限流额度，绝不写入 evidence。任意 registry、自动
+更新/删除、依赖安装和 Skill 脚本执行仍不在范围内；MCP 作为下面的独立切片交付。
 
 本地 stdio MCP 同样需要显式启用。先安装可选依赖，并把 host 持有的 JSON 配置
 保存在源码管理之外，例如 `.zlagent/mcp.json`：
@@ -562,13 +649,13 @@ PYTHONPATH=src python -m re_zlagent.check --pretty
 
 ## 下一步
 
-核心迁移已经关闭。M20/M23/M24 当前已经提供受限只读并发、保守自动路由、显式
-持久记忆、Context Manifest、分支视图、分阶段 Token 预算，以及 seed/stress
+核心迁移已经关闭。M20/M23/M24/M25 当前已经提供受限只读并发、保守自动路由、显式
+持久记忆、Context Manifest、轻量命名会话、分支视图、分阶段 Token 预算，以及 seed/stress
 路由报告。自动 task 仍由 host 显式开启，而不是默认开启；下一项证据门槛是来自
 代表性 host 流量的重复和扩展评估，不再增加新的架构层。
 
 远程 HTTP/OAuth MCP、server 安装/更新、resources/prompts、延迟 Schema 加载、
-Skill 下载/更新/删除/执行、cron、OpenGUI、RAG、隐式记忆挖掘和多 Agent 委派
+任意 Skill registry、Skill 更新/删除/执行、cron、OpenGUI、RAG、隐式记忆挖掘和多 Agent 委派
 仍明确延后。不得从恢复标签整体搬回任何 deferred 能力。
 
 ## 重要边界

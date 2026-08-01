@@ -339,13 +339,13 @@ class LocalSkillInstaller:
         skill_md = source / "SKILL.md"
         skill_yaml = source / "skill.yaml"
         instructions = source / "instructions.md"
-        has_hermes = skill_md.is_file()
+        has_agent_skill = skill_md.is_file()
         has_legacy_yaml = skill_yaml.is_file()
         has_legacy_instructions = instructions.is_file()
-        if has_hermes and (has_legacy_yaml or has_legacy_instructions):
+        if has_agent_skill and (has_legacy_yaml or has_legacy_instructions):
             raise SkillInstallError(
                 SkillInstallErrorCode.INVALID_PACKAGE,
-                "skill package must not mix Hermes and legacy manifests",
+                "skill package must not mix Agent Skills and legacy manifests",
             )
         if has_legacy_yaml != has_legacy_instructions:
             raise SkillInstallError(

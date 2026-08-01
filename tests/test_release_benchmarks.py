@@ -29,9 +29,9 @@ class ReleaseBenchmarkTests(unittest.IsolatedAsyncioTestCase):
         corpus = load_benchmark_corpus()
 
         self.assertEqual(corpus.schema_version, 1)
-        self.assertEqual(corpus.corpus_version, "2026.07.1")
+        self.assertEqual(corpus.corpus_version, "2026.07.2")
         self.assertEqual({case.suite for case in corpus.cases}, set(BenchmarkSuite))
-        self.assertEqual(len(corpus.cases), 6)
+        self.assertEqual(len(corpus.cases), 12)
 
     async def test_release_corpus_passes_all_semantic_and_recovery_gates(self) -> None:
         report = await ReleaseBenchmarkRunner(load_benchmark_corpus()).run()
@@ -41,6 +41,12 @@ class ReleaseBenchmarkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.false_completions, 0)
         self.assertEqual(report.duplicate_side_effects, 0)
         self.assertEqual(report.abandoned_runs, 0)
+        self.assertEqual(report.task_completion_rate, 1.0)
+        self.assertEqual(report.completed_tasks, 9)
+        self.assertEqual(report.long_task_completion_rate, 1.0)
+        self.assertEqual(report.completed_long_tasks, 5)
+        self.assertEqual(report.recovery_success_rate, 1.0)
+        self.assertEqual(report.recovered_tasks, 8)
         self.assertEqual(report.violations, ())
 
     async def test_per_case_latency_budget_is_a_blocking_expectation(self) -> None:
@@ -109,7 +115,7 @@ class ReleaseBenchmarkTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(code, 0)
         self.assertTrue(data["ok"])
-        self.assertEqual(data["aggregate"]["total"], 6)
+        self.assertEqual(data["aggregate"]["total"], 12)
 
 
 if __name__ == "__main__":

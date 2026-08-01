@@ -66,6 +66,9 @@ class IntentRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.metadata["provider"], "test")
         self.assertEqual(decision.metadata["usage"]["total_tokens"], 21)
         self.assertNotIn("secret", decision.metadata)
+        self.assertIn(
+            "a concrete file path is a present target", model.calls[0][0].content
+        )
         self.assertIn('"surface": "test"', model.calls[0][1].content)
 
     async def test_bounds_untrusted_request_context(self) -> None:

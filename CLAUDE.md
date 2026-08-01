@@ -170,6 +170,7 @@ src/re_zlagent/harness/tools/builtins/
   SendMessageTool
   ReadUrlTool
   InstallSkillTool
+  InstallGitHubSkillTool
 
 src/re_zlagent/harness/sandbox/
   WorkspacePathPolicy
@@ -252,12 +253,16 @@ src/re_zlagent/harness/evals/
   IntentEvalCorpus
   IntentEvalRunner
   IntentEvalReport
+  EffectivenessCorpus
+  EffectivenessBenchmarkRunner
+  EffectivenessReport
+  ProjectEffectivenessExecutors
 
 src/re_zlagent/app/
   run_cli ask
   run_cli intent-eval
 
-Current local M20/M23/M24 slice:
+Current local M20/M23/M24/M25 slice:
 
 src/re_zlagent/harness/
   ContextManifest
@@ -269,6 +274,16 @@ src/re_zlagent/harness/agent/
 src/re_zlagent/harness/memory/
   MemoryCaptureResult
   SqliteMemoryStore
+
+src/re_zlagent/harness/conversation/
+  ConversationTurn
+  ConversationCompaction
+  ConversationStore
+  InMemoryConversationStore
+  SqliteConversationStore
+  ConversationPolicy
+  ConversationManager
+  ModelConversationSummarizer
 
 src/re_zlagent/harness/runtime/
   RunBranchTree
@@ -445,6 +460,12 @@ Important semantics:
   select permissions, write memory, or assert task acceptance.
 - Intent evaluation uses a versioned labeled corpus and reports accuracy,
   confusion, invalid output, latency, and usage without mutating task state.
+- Project-effectiveness evaluation uses a JSON manifest plus line-addressable
+  Chinese JSONL cases. Injected adapters exercise real boundaries, while the
+  runner only observes returned facts and never decides Runtime acceptance.
+- An effectiveness corpus marked `pilot` is schema/executor evidence, not a
+  resume-ready result. Resume metrics require a frozen corpus version and must
+  not be tuned by editing the same cases after observing failures.
 - `auto` routing may resolve chat and clarification directly. A routed task may
   enter `HarnessRuntime` only when the host explicitly enables
   `allow_auto_task_execution`; the default remains disabled until real-model
@@ -466,6 +487,13 @@ Important semantics:
   configured application SQLite file through its own connection.
 - `MemoryManager` builds fenced relevant context, strips fake memory-context
   tags, and writes only from deterministic explicit remember-language.
+- Named conversation sessions are presentation context only. They store atomic
+  user/assistant turns, keep 32 raw turns hot, inject at most a 12-turn/3,000
+  Token recent window, and compact older prefixes to an append-only rolling
+  summary targeting eight recent turns and at most 800 summary Tokens.
+- Conversation summaries and recent turns are low-trust context, never durable
+  task truth. Compaction failure must preserve raw turns and must not change a
+  completed response or Runtime acceptance.
 - Model-inferred silent memory writes, embedding recall, and RAG remain
   forbidden until separately approved.
 - `ContextManifest` records context source, trust, character budget,
@@ -487,12 +515,20 @@ Important semantics:
 - Runtime concurrency may overlap only independent `SAFE` tools that are
   read-only, side-effect-free, outbox-free, and explicitly concurrency-safe.
   Confirmation, mutation, MCP, message, and Skill installation stay linear.
-- `FileSystemSkillLoader` reads Hermes `SKILL.md` and legacy `skill.yaml + instructions.md`.
+- `FileSystemSkillLoader` reads Agent Skills `SKILL.md` and legacy
+  `skill.yaml + instructions.md`.
 - `SkillGuard` statically classifies safe, caution, and dangerous skill text.
 - `LocalSkillInstaller` accepts only bounded local packages, refuses overwrite
   conflicts, and treats byte-identical packages as idempotent replays.
 - `InstallSkillTool` is confirm-tier and must execute through durable outbox
   intent; it never downloads, executes, updates, or deletes a Skill.
+- `InstallGitHubSkillTool` is a separate host opt-in. It accepts GitHub-only
+  sources, pins the resolved commit and validated digest in `skills.lock.json`,
+  reuses the local installer, and never executes package code or dependencies.
+- `SkillSelector` scores manifest metadata before reading bodies, skips dangerous
+  matches, and injects at most two bounded bodies as recalled background. A
+  selection must remain observable in content-free Context Manifest metadata;
+  selected bodies must not enter the intent-router call.
 - `LocalMcpClient` owns approved local stdio subprocesses on a dedicated event
   loop, completes the official MCP lifecycle, and closes every session with the
   application container.
@@ -512,7 +548,7 @@ Important semantics:
 - `AgentEvalRunner` runs benchmark scenarios against `AgentOrchestrator` output; it reports differences but never mutates task state.
 - `RunHealthMonitor` builds read-only health snapshots from runtime results.
 - Benchmarks and realtime health checks must not replace `AcceptanceGate`.
-- The release corpus is versioned package data; benchmark implementations execute real runtime/storage boundaries but remain read-only observers of completion truth.
+- The release corpus is versioned package data; benchmark implementations execute real runtime/storage boundaries but remain read-only observers of completion truth. Completion-rate denominators must come from case expectations so executor exceptions cannot disappear from the metric.
 - Release gates fail on any case regression, false completion, duplicate logical side effect, abandoned run, or latency budget violation.
 - `re_zlagent.check` is the single local/CI quality command and includes tests, release benchmarks, compile, lint, type checks, smoke checks, and package validation.
 - `TaskProgressReader` builds polling snapshots from `TaskStore`; it is read-only and must not emit or mutate events.
@@ -590,8 +626,11 @@ Treat these as high-risk:
 - `src/re_zlagent/harness/agent/`: planner boundary and orchestration path into runtime.
 - `src/re_zlagent/harness/model/`: model provider boundary and strict response contracts.
 - `src/re_zlagent/harness/memory/`: durable memory categories, versioned mutations, prompt-context fencing.
-- `src/re_zlagent/harness/skills/`: read-only loading plus controlled local
-  installation, path safety, duplicate/conflict detection, and static scanning.
+- `src/re_zlagent/harness/conversation/`: session identity, raw-turn retention,
+  rolling-summary compaction, Token selection, and SQLite reopen behavior.
+- `src/re_zlagent/harness/skills/`: read-only loading, metadata-first selection,
+  controlled local/GitHub installation, provenance locks, path/archive safety,
+  duplicate/conflict detection, and static scanning.
 - `src/re_zlagent/harness/observability/`: trace spans, trace events, metadata redaction, diagnostics foundations.
 - `src/re_zlagent/harness/evals/`: benchmark expectations and realtime health snapshots; no completion authority.
 - `src/re_zlagent/harness/progress/`: read-only progress snapshots from task runs, events, and checkpoints.
@@ -717,7 +756,7 @@ When touching memory, also verify:
 
 When touching skills, also verify:
 
-- Hermes `SKILL.md` frontmatter is parsed and stripped from body
+- Agent Skills `SKILL.md` frontmatter is parsed and stripped from body
 - legacy `skill.yaml + instructions.md` still loads
 - duplicate skill ids are rejected
 - symlink/path escapes are rejected
@@ -728,6 +767,10 @@ When touching skills, also verify:
 - the candidate source must stay byte-stable across manifest validation
 - byte-identical replay succeeds while different existing content is preserved
 - a dispatch crash retries without creating a duplicate installed Skill
+- GitHub sources cannot escape fixed GitHub hosts or the selected archive subpath
+- remote refs resolve to commit evidence and lock replay performs no second fetch
+- malformed/symlink/special-file archives and nonstandard manifests fail closed
+- only metadata-matched safe Skill bodies enter bounded request context
 
 When touching MCP, also verify:
 
@@ -760,6 +803,17 @@ When touching evals, also verify:
 - thresholds fail closed for false completion, duplicate side effects, abandoned runs, and latency regressions
 - realtime health snapshots classify completed, waiting_user, recoverable, and failed runs
 - evals and health checks do not mutate runtime state or decide acceptance
+- effectiveness JSONL errors report their exact line and reject unknown fields
+- every effectiveness case declares stable capability IDs; track minimums and
+  required capability coverage must match the manifest
+- Chinese effectiveness scenarios stay separate from the blocking release corpus
+- deterministic effectiveness adapters exercise real Harness boundaries;
+  intent accuracy requires a real injected model/router
+- provider-backed task cases must pass through Planner and Runtime, and task
+  completion requires completed status, expected tool evidence, acceptance refs
+  covering that evidence, and zero false completion
+- Planner usage must aggregate every bounded repair attempt; task reports keep
+  case pass rate, task completion, long-task completion, and Token use separate
 
 When touching progress, also verify:
 

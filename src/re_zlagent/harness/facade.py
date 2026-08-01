@@ -48,6 +48,8 @@ class SkillInventoryItem:
     description: str
     version: str
     format: str
+    license: str | None = None
+    compatibility: str | None = None
     tags: tuple[str, ...] = field(default_factory=tuple)
     triggers: tuple[str, ...] = field(default_factory=tuple)
 
@@ -62,6 +64,8 @@ class SkillInventoryItem:
             "description": self.description,
             "version": self.version,
             "format": self.format,
+            "license": self.license,
+            "compatibility": self.compatibility,
             "tags": list(self.tags),
             "triggers": list(self.triggers),
         }
@@ -231,6 +235,8 @@ def _skill_item(manifest: SkillManifest) -> SkillInventoryItem:
         description=manifest.description,
         version=manifest.version,
         format=manifest.format.value,
+        license=manifest.license,
+        compatibility=manifest.compatibility,
         tags=manifest.tags,
         triggers=manifest.triggers,
     )

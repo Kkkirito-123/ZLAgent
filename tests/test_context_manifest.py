@@ -55,6 +55,25 @@ class ContextManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ContextManifestBuilder(max_chars=256).build((item, item))
 
+    def test_token_estimate_is_conservative_for_chinese_context(self) -> None:
+        content = "上海旅行计划需要保留住宿和日期约束。" * 5
+        manifest = ContextManifestBuilder(max_chars=256).build(
+            (
+                ContextInput(
+                    id="conversation",
+                    source="conversation_store",
+                    trust=ContextTrust.UNTRUSTED,
+                    content=content,
+                ),
+            )
+        )
+
+        self.assertEqual(manifest.estimated_tokens, len(content))
+        self.assertEqual(
+            manifest.to_dict()["segments"][0]["estimated_tokens"],
+            len(content),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

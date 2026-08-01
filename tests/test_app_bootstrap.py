@@ -174,6 +174,43 @@ class AppBootstrapTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             ApplicationBootstrapConfig(skill_import_dir=Path("imports"))
 
+    def test_github_skill_installation_is_explicitly_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            imports = root / "imports"
+            managed = root / "skills"
+            imports.mkdir()
+            managed.mkdir()
+            disabled = build_application_container(
+                planner=StaticAgentPlanner(self._plan()),
+                tool_registry=self._registry(),
+                config=ApplicationBootstrapConfig(
+                    register_file_tools=False,
+                    skill_import_dir=imports,
+                    skills_dir=managed,
+                ),
+            )
+            disabled_tools = disabled.tools.names()
+            disabled.close()
+            enabled = build_application_container(
+                planner=StaticAgentPlanner(self._plan()),
+                tool_registry=self._registry(),
+                config=ApplicationBootstrapConfig(
+                    register_file_tools=False,
+                    skills_dir=managed,
+                    allow_github_skill_install=True,
+                ),
+            )
+            enabled_tools = enabled.tools.names()
+            enabled.close()
+
+        self.assertNotIn("install_github_skill", disabled_tools)
+        self.assertIn("install_github_skill", enabled_tools)
+        self.assertNotIn("install_skill", enabled_tools)
+
+        with self.assertRaises(ValueError):
+            ApplicationBootstrapConfig(allow_github_skill_install=True)
+
     def test_bootstrap_requires_planner_or_model(self) -> None:
         with self.assertRaises(ValueError):
             build_application_container()

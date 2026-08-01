@@ -76,7 +76,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--skills-dir",
-        help="Managed installed-Skill root; requires --skill-import-dir.",
+        help="Managed installed-Skill root used for inventory and selection.",
+    )
+    parser.add_argument(
+        "--allow-github-skill-install",
+        action="store_true",
+        help=(
+            "Register the confirmation-gated GitHub Skill installer. "
+            "Requires --skills-dir."
+        ),
     )
     parser.add_argument(
         "--mcp-config",
@@ -122,6 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-id",
         default=None,
         help="Optional request/run identity; generated when omitted.",
+    )
+    ask.add_argument(
+        "--session-id",
+        default=None,
+        help=(
+            "Optional durable conversation identity. CLI sessions require "
+            "--sqlite so later invocations can reuse context."
+        ),
     )
     ask.add_argument("--context-json", default="{}")
     ask.add_argument("--prompt-version", default=None)
@@ -231,6 +247,12 @@ def run_cli(
         sqlite_path = getattr(args, "sqlite", None)
         if args.command not in {"ask", "intent-eval"} and not sqlite_path:
             raise CliArgumentError("--sqlite is required")
+        if (
+            args.command == "ask"
+            and getattr(args, "session_id", None) is not None
+            and not sqlite_path
+        ):
+            raise CliArgumentError("ask --session-id requires --sqlite")
         data, code = asyncio.run(
             _run_command(
                 args,
@@ -278,6 +300,7 @@ async def _run_command(
         ),
         skills_dir=Path(args.skills_dir) if args.skills_dir else None,
         mcp_config_path=Path(args.mcp_config) if args.mcp_config else None,
+        allow_github_skill_install=bool(args.allow_github_skill_install),
         allow_auto_task_execution=bool(
             getattr(args, "auto_execute_task", False)
         ),
@@ -312,6 +335,7 @@ async def _run_command(
                 context=_parse_context(args.context_json),
                 model_name=args.model or getattr(resolved_model, "model", None),
                 prompt_version=args.prompt_version,
+                session_id=args.session_id,
             )
             result = await container.general_agent.run(
                 request,
@@ -580,6 +604,7 @@ def _general_agent_result_to_dict(result: GeneralAgentResult) -> dict[str, Any]:
         "command": "ask",
         "mode": result.mode.value,
         "run_id": result.request.run_id,
+        "session_id": result.request.session_id,
         "response": result.response,
         "verified": result.verified,
         "intent": (

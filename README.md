@@ -225,7 +225,10 @@ Skills:
 - `FileSystemSkillLoader`
 - `SkillGuard`
 - `LocalSkillInstaller`
+- `GitHubSkillInstaller`
+- `SkillSelector`
 - `InstallSkillTool`
+- `InstallGitHubSkillTool`
 - `scan_skill_text`
 
 MCP:
@@ -263,6 +266,10 @@ Evals:
 - `IntentEvalCorpus`
 - `IntentEvalRunner`
 - `IntentEvalReport`
+- `EffectivenessCorpus`
+- `EffectivenessBenchmarkRunner`
+- `EffectivenessReport`
+- `ProjectEffectivenessExecutors`
 
 Progress:
 
@@ -287,6 +294,7 @@ M16     LANDED   durable worker ownership and retry budgets
 M17     LANDED   real task submission and execution MVP
 M18     LANDED   reliability and release gates
 M19-SKILLS LANDED controlled local non-overwriting Skill installation
+M19-SKILLS-GITHUB LOCAL opt-in pinned GitHub Skill installation and selection
 M19-MCP LANDED approved local stdio MCP lifecycle and dynamic tool adapters
 M19     DEFERRED remaining optional capability migrations
 M20     LOCAL    bounded read-only DAG concurrency
@@ -294,13 +302,17 @@ M21     LANDED   root promotion and legacy closure verified from a clean checkou
 M22     LOCAL    general single-agent facade and measurable intent routing
 M23     LOCAL    context manifest, explicit memory, and branch views
 M24     LOCAL    token-bounded model I/O and mixed-request routing stress
+M25     LOCAL    lightweight named sessions and rolling context compaction
 ```
 
 The local product MVP supports persisted submission, worker execution, approval
-recovery, and verified result reads across process restart. M18 adds a versioned
-six-case release corpus, semantic and latency thresholds, Ruff, mypy, and one
-machine-readable quality command. The repository-root workflow runs the same gate
-on Python 3.11 and 3.13.
+recovery, and verified result reads across process restart. The release corpus
+now contains 12 cases, including multi-retry continuation, persisted DAG-frontier
+restart, alternative-tool recovery, mid-plan approval, retry-budget dead-letter
+handling, and cooperative cancellation. It reports evidence-backed task
+completion, long-task completion, and recovery rates in addition to the original
+semantic and latency gates. The repository-root workflow runs the same gate on
+Python 3.11 and 3.13.
 
 ## General Single-Agent Facade
 
@@ -323,7 +335,17 @@ hosts. It keeps one facade with three request modes:
 `ContextManifest` describing source, trust, character budget, truncation, and
 estimated tokens. Explicit "remember ..." language is captured
 deterministically into the configured memory store; model-inferred silent
-memory, embeddings, RAG, and multi-agent delegation remain out of scope:
+memory, embeddings, RAG, and multi-agent delegation remain out of scope.
+An optional `session_id` adds lightweight multi-turn continuity: 32 raw turns
+remain available locally, up to 12 recent complete turns may enter the bounded
+window, and the oldest prefix is compacted to an append-only rolling summary
+that targets eight recent turns. Conversation context is low-trust presentation
+data and never replaces checkpoints or `ContextPack` for durable tasks.
+When a managed Skill inventory is configured, `SkillSelector` first scores only
+manifest metadata, loads at most two matching instruction bodies, rejects a
+dangerous match, and records the bounded selection in that same manifest. An
+unmatched Skill contributes no instruction text or prompt tokens; selected
+instruction bodies are also excluded from the intent-routing call:
 
 ```python
 from re_zlagent.harness.agent import AgentRunRequest, GeneralAgentMode
@@ -361,6 +383,16 @@ The local CLI exposes the same facade. Chat does not require SQLite:
 ```bash
 PYTHONPATH=src python -m re_zlagent.app.cli \
   ask "Explain what this Agent can do" --mode chat
+```
+
+A named CLI conversation uses SQLite so a later process can reopen the same
+context:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  ask "I am planning a trip to Shanghai" --mode chat \
+  --session-id personal-chat
 ```
 
 Interactive task mode may persist its run and use configured workspace tools:
@@ -416,6 +448,57 @@ With provider JSON Output and the Router budget enabled,
 invalid outputs, 1,985 ms average latency, and 9,180 total tokens. Seed and
 stress reports remain separate so the clearer seed set cannot hide ambiguous
 failures.
+
+## Chinese Project Effectiveness Benchmark
+
+The resume-evidence benchmark is separate from the blocking release corpus. Its
+manifest is JSON, while cases use JSONL so one Chinese scenario can be reviewed,
+extended, or diagnosed without rewriting a large JSON document:
+
+```text
+effectiveness-v1.manifest.json   version, language, tracks, capability matrix
+effectiveness-v1.cases.jsonl     one independent Chinese scenario per line
+runner output                    JSON, one-result-per-line JSONL, or Markdown
+```
+
+The packaged pilot contains 70 Chinese cases and 105 repeated observations across
+intent routing, Harness reliability, memory/context, DAG/Token behavior, and 12
+real-model task executions. Every case declares stable capability IDs, and the
+manifest rejects a corpus with any uncovered required capability. `pilot` means
+the schema and executors are usable, not that the numbers are ready for a resume.
+Validate the frozen shape and 28-capability matrix without calling a model:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.effectiveness_benchmark --validate-only --pretty
+```
+
+Run the 66 deterministic observations through real Runtime, storage, memory,
+context, DAG, and model-budget boundaries:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.effectiveness_benchmark \
+  --deterministic-only --output-format markdown
+```
+
+Running all tracks requires the same real model configuration as `intent-eval`.
+The intent adapter only observes `JsonIntentRouter`; it never executes tools. The
+`agent_task` track asks the real planner to construct 1-6 step Chinese plans, then
+executes only a safe benchmark evidence tool through `HarnessRuntime`. Completion
+requires a completed run, all expected evidence, an acceptance contract covering
+that evidence, correct ordering/dependencies, and zero false completion. Reports
+separate benchmark pass rate from task and long-task completion rates and include
+total, average, P95, and maximum planner Token usage. Reports may be emitted as
+`json`, `jsonl`, or `markdown`. Before using results in a resume, freeze the corpus
+version and run without changing cases after seeing failures.
+
+On 2026-07-30, `deepseek-v4-flash` passed the 12-case `agent_task` pilot in
+12/12 cases: task completion 12/12, long-task completion 10/10, zero false
+completions, and zero planner repairs. Planner usage was 21,164 total tokens,
+1,763.7 average, and 2,442 P95/maximum. This is one controlled pilot run, not a
+production success-rate claim. The same model passed the 27 repeated intent
+observations in 27/27 with 13,238 tokens (490.3 average). Together with 66/66
+local deterministic observations, the independently executed tracks cover all
+105/105 observations; provider-backed tracks used 34,402 tokens in total.
 
 ## Model Token Budgets
 
@@ -493,7 +576,7 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 ```
 
 Controlled local Skill installation is opt-in. Create separate import and
-managed roots, put one Hermes `SKILL.md` or legacy package under the import root,
+managed roots, put one Agent Skills `SKILL.md` or legacy package under the import root,
 and pass both roots to every `submit`, `work`, or `approve` process that may plan
 or execute `install_skill`:
 
@@ -508,8 +591,28 @@ PYTHONPATH=src python -m re_zlagent.app.cli \
 
 `source_path` is always relative to the configured import root. Installation
 requires explicit approval, blocks symlinks/path escapes/dangerous text, and
-never overwrites different content. Network download, Skill execution, update,
-and deletion remain outside the Skill slice. MCP is delivered separately below.
+never overwrites different content.
+
+GitHub installation is a separate host opt-in over the same managed root:
+
+```bash
+PYTHONPATH=src python -m re_zlagent.app.cli \
+  --sqlite .zlagent/tasks.sqlite \
+  --skills-dir .zlagent/skills \
+  --allow-github-skill-install \
+  submit run-skill-remote-001 \
+  "Install demo from owner/repo@main#skills/demo"
+```
+
+`install_github_skill` accepts only `https://github.com/...` or
+`owner/repo@ref#subpath`, requires confirmation, resolves the ref to a full
+commit SHA, validates a standard `SKILL.md`, extracts a bounded regular-file
+tree, reuses the non-overwriting local installer, and records provenance in
+`skills.lock.json`. An outbox replay uses the locked commit and digest without a
+second download. `GITHUB_TOKEN` is optional for API rate limits and is never
+written to evidence. Arbitrary registries, automatic update/delete, dependency
+installation, and Skill script execution remain outside the slice. MCP is
+delivered separately below.
 
 Local stdio MCP is also opt-in. Install the optional dependency and save a
 host-owned JSON configuration outside source control, for example at
@@ -652,10 +755,12 @@ claimable work, with `--max-ticks` preventing an unbounded foreground loop.
 - App bootstrap containers should be closed when they own durable adapters.
 - Durable memory mutations require observed versions.
 - Memory context injected into prompts is fenced and sanitized.
-- Skill inventory is loaded read-only from a bounded managed directory.
-- The only Skill mutation path is a confirm-tier controlled local install through
-  deterministic outbox intent; dangerous packages and overwrite conflicts fail
-  closed, while identical content is an idempotent replay.
+- Skill inventory is loaded read-only from a bounded managed directory; only
+  metadata-matched bodies enter a request Context Manifest.
+- Skill mutation paths are confirm-tier controlled local or explicitly enabled
+  GitHub installs through deterministic outbox intent. Dangerous packages,
+  unsafe archives, and overwrite conflicts fail closed; GitHub provenance is
+  pinned in `skills.lock.json` and Skill package code is never executed.
 - MCP servers are host-configured local stdio processes with exact command
   approval, exact tool allowlists, named environment references, bounded
   schemas, and explicit lifecycle cleanup.
@@ -752,15 +857,15 @@ Current tests cover:
 
 ## Next Work
 
-The core migration is closed. M20/M23/M24 now provide bounded read-only
+The core migration is closed. M20/M23/M24/M25 now provide bounded read-only
 concurrency, conservative auto routing, explicit durable memory, context
-manifests, branch views, per-phase Token budgets, and seed/stress routing
-reports. Automatic task execution remains host-enabled rather than default-on;
+manifests, lightweight named sessions, branch views, per-phase Token budgets,
+and seed/stress routing reports. Automatic task execution remains host-enabled rather than default-on;
 the next evidence gate is repeated and expanded evaluation from representative
 host traffic, not another architecture layer.
 
 Remote HTTP/OAuth MCP, server installation/update, resources/prompts, deferred
-schema loading, Skill download/update/delete/execution, cron, OpenGUI, RAG,
+schema loading, arbitrary Skill registries, Skill update/delete/execution, cron, OpenGUI, RAG,
 implicit memory mining, and multi-agent delegation remain explicitly deferred.
 No deferred capability should be restored wholesale from the legacy tag.
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "corpus_version": "2026.07.1",
+  "corpus_version": "2026.07.2",
   "thresholds": {
     "minimum_pass_rate": 1.0,
     "maximum_false_completions": 0,
@@ -105,6 +105,116 @@
         "metrics": {
           "reclaimed_expired_leases": 1,
           "abandoned_runs": 0
+        }
+      }
+    },
+    {
+      "id": "long-multi-retry-continuation",
+      "name": "Two transient failures resume the complete five-step frontier",
+      "suite": "long_task",
+      "kind": "multi_retry_continuation",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "recovery_cycles": 2,
+          "completed_prefix_replays": 0,
+          "tool_calls": 7,
+          "verified_steps": 5
+        }
+      }
+    },
+    {
+      "id": "long-sqlite-frontier-restart",
+      "name": "SQLite restart resumes only the remaining five-step frontier",
+      "suite": "long_task",
+      "kind": "sqlite_frontier_restart",
+      "max_duration_ms": 5000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "completed_prefix_replays": 0,
+          "remaining_steps_executed": 3,
+          "persisted_plan_restored": true,
+          "first_process_completed_steps": 2
+        }
+      }
+    },
+    {
+      "id": "long-alternative-tool-continuation",
+      "name": "Alternative tool preserves original step identity and continues",
+      "suite": "long_task",
+      "kind": "alternative_tool_continuation",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "primary_failures": 1,
+          "completed_prefix_replays": 0,
+          "original_step_identity_preserved": true,
+          "verified_steps": 3
+        }
+      }
+    },
+    {
+      "id": "long-middle-approval-continuation",
+      "name": "Middle approval resolves interaction and completes remaining steps",
+      "suite": "long_task",
+      "kind": "middle_approval_continuation",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": true,
+        "status": "completed",
+        "recovered": true,
+        "metrics": {
+          "approval_interactions": 1,
+          "open_interactions": 0,
+          "completed_prefix_replays": 0,
+          "remaining_steps_executed": 3
+        }
+      }
+    },
+    {
+      "id": "long-retry-budget-dead-letter",
+      "name": "Retry budget exhaustion becomes visible dead-letter state",
+      "suite": "long_task",
+      "kind": "retry_budget_dead_letter",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": false,
+        "status": "recovering",
+        "recovered": false,
+        "metrics": {
+          "initially_recoverable": true,
+          "retry_scheduled": true,
+          "dead_lettered": true,
+          "retry_attempts": 2,
+          "false_completions": 0,
+          "abandoned_runs": 0
+        }
+      }
+    },
+    {
+      "id": "long-cooperative-cancel",
+      "name": "Cooperative cancellation stops before the next required step",
+      "suite": "long_task",
+      "kind": "cooperative_cancel",
+      "max_duration_ms": 3000,
+      "expected": {
+        "accepted": false,
+        "status": "cancelled",
+        "recovered": false,
+        "metrics": {
+          "worker_parked": true,
+          "remaining_tool_calls": 0,
+          "cancel_checkpoint": true,
+          "false_completions": 0
         }
       }
     }

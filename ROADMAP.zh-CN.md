@@ -113,6 +113,7 @@
 | M17 | `LANDED` | 交付真实任务提交与执行 MVP。 |
 | M18 | `LANDED` | 增加 CI、benchmark、故障注入和时延/可靠性门槛。 |
 | M19-SKILLS | `LANDED` | 增加受控本地且不覆盖的 Skill 安装。 |
+| M19-SKILLS-GITHUB | `LOCAL` | 增加显式开启、固定版本的 GitHub Agent Skill 安装和来源锁。 |
 | M19-MCP | `LANDED` | 增加经过批准的本地 stdio MCP 生命周期和动态工具。 |
 | M19 | `DEFERRED` | 后续可选能力仍需逐个独立切片迁移。 |
 | M20 | `LOCAL` | 只对独立、只读且显式并发安全的 DAG 步骤启用受限并发。 |
@@ -120,6 +121,7 @@
 | M22 | `LOCAL` | 增加通用单 Agent 门面和可测量的意图路由。 |
 | M23 | `LOCAL` | 接入受限上下文、显式记忆、分支视图和保守自动路由。 |
 | M24 | `LOCAL` | 限制模型 I/O Token，并增加混合请求路由压力证据。 |
+| M25 | `LOCAL` | 增加轻量命名会话和滚动压缩。 |
 
 ## 6. 历史阶段
 
@@ -389,13 +391,25 @@ adapter 提供 submit、status、work、approval 和 result；OpenAI-compatible 
 确定性的文件系统 intent，通过 durable outbox 执行，返回结构化证据，刷新只读
 inventory，并把字节完全相同的内容当作崩溃恢复时的幂等重放。
 
-**M19-SKILLS 不做：** 网络或仓库下载、Skill 执行、curation、更新、删除、依赖安装、
-MCP 和远程 registry。MCP 不包含在 Skill 改动中，必须通过下面单独批准的切片交付。
+**已批准扩展 M19-SKILLS-GITHUB（`LOCAL`）：** host 显式开启后，增加第二个
+confirm-tier 工具，并只允许 GitHub 仓库。它解析有界 repository/ref/subpath，把 ref
+解析为完整 commit SHA，只从固定 GitHub host 下载有大小限制的 ZIP，拒绝路径穿越、
+链接、特殊文件、超限文件树、非标准 manifest 和危险文本，然后复用原子本地
+installer。`skills.lock.json` 记录解析后的 revision、校验过的 tree digest、扫描结论
+和来源。相同 outbox 重放会校验锁和已安装摘要，不再发起网络请求。已安装 Skill 先
+按元数据打分，最多两个命中且安全的正文进入有界、低信任 Context Manifest segment。
 
-**M19-SKILLS 证据：** 聚焦测试覆盖 Hermes 和 legacy 包、显式批准、结构化证据、
+**M19-SKILLS 其余不做：** 任意远程 registry、Skill 脚本执行、curation、自动更新、
+删除、依赖安装和 MCP。MCP 不包含在 Skill 改动中，必须通过下面单独批准的切片交付。
+
+**M19-SKILLS 证据：** 聚焦测试覆盖 Agent Skills 和 legacy 包、显式批准、结构化证据、
 路径/符号链接拒绝、manifest/来源稳定性、危险文本、包限制、冲突保留、相同内容重放、
 inventory 刷新和 dispatch 崩溃恢复。本地统一质量门槛通过 328 项测试、6/6 release
 benchmark、compileall、Ruff、对 85 个源码文件执行的 mypy、CLI smoke 和包 dry-run。
+
+**M19-SKILLS-GITHUB 本地证据：** 聚焦测试覆盖 GitHub-only 来源解析、不可变 revision
+证据、标准 manifest 要求、压缩包路径穿越/符号链接拒绝、危险文本拒绝、来源锁写入、
+无网络幂等重放、显式工具确认、bootstrap opt-in，以及排除无关或危险正文的渐进选择。
 
 **已批准切片 M19-MCP（`LANDED`）：** host 可以加载 fail-closed JSON 配置，其中只
 允许明确批准的本地 stdio 命令、每个 server 的精确工具白名单、命名环境变量引用和
@@ -553,6 +567,8 @@ M21 因此满足退出门槛。关闭时没有自动开始的下一阶段；之�
   host 显式启用
 - 对“记住……”等请求执行确定性的显式记忆捕获，不由模型静默推断记忆
 - 通过关键词召回相关记忆，并作为有 fence 的背景上下文注入
+- 已安装 Skill 先按元数据选择，最多两个安全且受限的正文作为低信任背景注入；
+  未命中正文不占 prompt 预算
 - 增加可观察 `ContextManifest`，记录来源、信任级别、字符预算、截断和 Token
   估算，但 metadata 不回显私密正文
 - 从现有 fork lineage 投影只读分支树
@@ -567,6 +583,7 @@ Agent 委派、并发副作用、并发确认步骤、分布式调度或推测�
 - `auto` 澄清不创建 run；被 gate 的 task 路由没有 host opt-in 时不能执行
 - 每次记忆写入都有显式用户语言触发和来源 metadata
 - prompt context 由受限 manifest segment 组装
+- 不含正文的 manifest metadata 可观察 Skill id、分数、摘要、截断和扫描结论
 - 分支检查保持只读，并能检测断裂或循环 lineage
 - 只有独立、只读且并发安全的步骤可以重叠，其余继续线性执行
 - crash/recovery、checkpoint、outbox 和 acceptance 仍由 `HarnessRuntime` 负责
@@ -617,6 +634,62 @@ cap 优先级、usage 规范化与阶段聚合、超限拒绝、独立压力语�
 `deepseek-v4-flash` JSON Output 对 24 条压力语料执行环境实测：24/24 全部正确，
 非法输出为 0，平均时延 1,985 ms，总 Token 9,180。两套小型语料不等同生产流量，
 因此 task 执行 gate 仍默认关闭。
+
+**已批准的项目效果证据扩展（`LOCAL`）：** 独立中文 pilot corpus 现覆盖意图路由、
+Harness 可靠性、Memory/Context、DAG/Token 和真实模型任务执行。JSON manifest 冻结
+全局元数据与 28 项必需能力；70 条逐行 JSONL 案例共形成 105 次重复观测，任一必需
+能力没有 case 时加载直接失败。注入式执行适配器会经过真实 Runtime、存储、记忆、
+上下文、并发、Token 预算、真实 Router，以及 Planner 到 Runtime 的边界。12 个任务
+case 包含 1 至 6 个顺序证据步骤；只有可信 Runtime 验收通过、预期证据齐全、验收引用
+匹配且误完成数为 0 才计为完成。runner 将 case 通过率与任务/长任务完成率分开，并
+聚合 Planner 的总计、平均、P95 和最大 Token；它仍只是观察者，不能成为验收权威。
+`pilot` 不是可直接写入简历的准确率结论，正式测量前必须冻结 corpus。本地证据已通过
+66/66 次确定性观测和 12/12 release gate。2026-07-30 使用
+`deepseek-v4-flash` 完成 provider 任务 pilot：12/12 case 通过，其中长任务
+10/10，误完成 0，Planner 修复 0 次；Planner 总计 21,164 Token，平均 1,763.7，
+P95 和最大值均为 2,442。此前一次 11/12 诊断运行暴露了数组字段修复提示不明确的
+问题；补充字段路径校验错误和显式 JSON 数组约束后通过，期间没有删除或改写失败
+case。同一模型的 27 次真实 Router 重复观测取得 27/27；此前一次 26/27 诊断运行
+发现：当写入路径和来源内容已经存在时，Router 仍可能过度澄清。明确 Router 边界后
+修复，且没有改写该 case。意图轨消耗 13,238 Token（平均 490.3）；因此三个独立
+执行轨道共通过 105/105 次观测，两条 provider 轨合计消耗 34,402 Token。
+当前统一质量门通过 420 项测试、12/12 release case、compileall、Ruff、对 108 个
+源码文件执行的 mypy、全部 CLI smoke 和 package dry-run。
+
+### M25 - 轻量会话上下文
+
+**状态：** `LOCAL`
+
+**目标：** 为通用单 Agent 提供实用的多轮连续性，同时保持聊天上下文轻量、可选、
+可观察，并与持久化长任务事实严格分离。
+
+**MVP 范围：**
+
+- 显式可选 `session_id`；未提供时继续保持无状态
+- 以用户/助手完整轮次为原子，提供内存和 SQLite adapter
+- 32 轮热原文、最近 8 轮目标窗口，以及额外 4 轮压缩阈值缓冲
+- 最近轮次 3,000 Token 上限和滚动摘要 800 Token 上限
+- append-only 压缩记录，把上一版摘要与下一段连续旧轮次合并
+- 在 `ContextManifest` 和响应 metadata 中只暴露不含正文的会话/压缩事实
+- CLI 跨进程重开后可继续使用同一持久化会话
+
+**不包含：** 把聊天历史作为任务事实、自动记忆写入、embedding、RAG、向量存储、
+可分支聊天树、多 Agent 通信、精确 provider tokenizer，或运行中任务的需求改写。
+
+**退出条件：**
+
+- 同一会话的两次请求可使用上一轮完整上下文；无 session 请求保持无状态
+- 第 12 个待处理轮次会压缩最旧前缀并留下 8 个近期原子轮次
+- 第二次压缩会合并上一版摘要，而不是丢弃它
+- 摘要失败保留原始轮次，且不能让已完成的用户回复失败
+- SQLite 重开能重建相同的近期上下文和压缩前缀
+- 中文上下文使用保守的非 ASCII Token 估算
+- 聚焦测试和完整仓库质量门通过
+
+**本地证据：** 聚焦测试覆盖原文保留、SQLite 重开、按轮次和 Token 触发压缩、
+上一版摘要合并、失败降级、无状态兼容、GeneralAgent 注入、不含正文的 Manifest，
+以及 CLI 跨进程重开。统一质量门在本地通过 415 项测试、6/6 release benchmark、
+compileall、Ruff、对 107 个源码文件执行的 mypy、全部 CLI smoke 和 package dry-run。
 
 ## 8. 能力决策
 

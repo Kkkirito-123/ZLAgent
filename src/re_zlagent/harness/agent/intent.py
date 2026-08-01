@@ -81,9 +81,7 @@ class IntentDecision:
         question = self.clarification_question
         if self.route is IntentRoute.CLARIFY:
             if question is None or not question.strip():
-                raise ValueError(
-                    "clarify intent requires a clarification question"
-                )
+                raise ValueError("clarify intent requires a clarification question")
             object.__setattr__(self, "clarification_question", question.strip())
         elif question is not None:
             raise ValueError(
@@ -176,16 +174,12 @@ def parse_intent_decision(
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise IntentRouteError(
-            f"intent response is not valid JSON: {exc}"
-        ) from exc
+        raise IntentRouteError(f"intent response is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise IntentRouteError("intent response root must be an object")
 
     unknown = sorted(
-        set(data).difference(
-            {"route", "reason_code", "clarification_question"}
-        )
+        set(data).difference({"route", "reason_code", "clarification_question"})
     )
     if unknown:
         raise IntentRouteError(
@@ -204,9 +198,7 @@ def parse_intent_decision(
 
     question = data.get("clarification_question")
     if question is not None and not isinstance(question, str):
-        raise IntentRouteError(
-            "clarification_question must be a string or null"
-        )
+        raise IntentRouteError("clarification_question must be a string or null")
     try:
         return IntentDecision(
             route=route,
@@ -259,6 +251,16 @@ Routes:
   message delivery, installation, persistence, or another external action.
 - clarify: an action is requested but its target or essential execution details
   are missing, so task execution would be unsafe or impossible.
+
+Clarification boundary:
+- use clarify only when a required target, recipient, object identifier, or
+  execution constraint is absent from both the request and supplied context
+- a concrete file path is a present target
+- if context explicitly says the referenced content, draft, or summary is
+  available, do not ask the user to repeat that content; route the external
+  read/write/message action as task
+- missing optional preferences do not turn an otherwise executable task into
+  clarify
 
 Allowed reason_code values:
 - chat: direct_answer

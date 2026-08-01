@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,14 @@ from re_zlagent.harness.agent import (
     JsonIntentRouter,
     JsonPlanPlanner,
 )
+from re_zlagent.harness.conversation import (
+    ConversationManager,
+    ConversationPolicy,
+    ConversationStore,
+    InMemoryConversationStore,
+    ModelConversationSummarizer,
+    SqliteConversationStore,
+)
 from re_zlagent.harness.memory import (
     InMemoryMemoryStore,
     MemoryManager,
@@ -24,7 +33,13 @@ from re_zlagent.harness.mcp import LocalMcpClient, create_mcp_tools, load_mcp_co
 from re_zlagent.harness.model import ModelClient
 from re_zlagent.harness.progress import TaskProgressReader
 from re_zlagent.harness.runtime import HarnessRuntime
-from re_zlagent.harness.skills import FileSystemSkillLoader, LocalSkillInstaller
+from re_zlagent.harness.skills import (
+    FileSystemSkillLoader,
+    GitHubApiClient,
+    GitHubSkillInstaller,
+    LocalSkillInstaller,
+    SkillSelector,
+)
 from re_zlagent.harness.storage import (
     InMemoryLongTaskStore,
     InMemoryTaskStore,
@@ -34,7 +49,11 @@ from re_zlagent.harness.storage import (
     TaskStore,
 )
 from re_zlagent.harness.tools import ToolRegistry
-from re_zlagent.harness.tools.builtins import InstallSkillTool, create_file_tools
+from re_zlagent.harness.tools.builtins import (
+    InstallGitHubSkillTool,
+    InstallSkillTool,
+    create_file_tools,
+)
 
 from .application import AgentApplication
 from .operator import ApprovalService, OperatorService
@@ -51,6 +70,12 @@ class ApplicationBootstrapConfig:
     skills_dir: Path | None = None
     mcp_config_path: Path | None = None
     allow_auto_task_execution: bool = False
+    allow_github_skill_install: bool = False
+    conversation_raw_retention_rounds: int = 32
+    conversation_target_recent_rounds: int = 8
+    conversation_threshold_extra_rounds: int = 4
+    conversation_max_recent_tokens: int = 3_000
+    conversation_max_summary_tokens: int = 800
 
     def __post_init__(self) -> None:
         if self.workspace_dir is not None:
@@ -63,10 +88,21 @@ class ApplicationBootstrapConfig:
             object.__setattr__(self, "skills_dir", Path(self.skills_dir))
         if self.mcp_config_path is not None:
             object.__setattr__(self, "mcp_config_path", Path(self.mcp_config_path))
-        if (self.skill_import_dir is None) != (self.skills_dir is None):
+        if self.skill_import_dir is not None and self.skills_dir is None:
             raise ValueError(
-                "skill_import_dir and skills_dir must be configured together"
+                "skill_import_dir requires skills_dir"
             )
+        if self.allow_github_skill_install and self.skills_dir is None:
+            raise ValueError(
+                "allow_github_skill_install requires a managed Skill directory"
+            )
+        ConversationPolicy(
+            raw_retention_rounds=self.conversation_raw_retention_rounds,
+            target_recent_rounds=self.conversation_target_recent_rounds,
+            threshold_extra_rounds=self.conversation_threshold_extra_rounds,
+            max_recent_tokens=self.conversation_max_recent_tokens,
+            max_summary_tokens=self.conversation_max_summary_tokens,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +123,8 @@ class ApplicationContainer:
     progress_reader: TaskProgressReader
     memory_store: MemoryStore
     memory_manager: MemoryManager
+    conversation_store: ConversationStore
+    conversation_manager: ConversationManager
     mcp_client: LocalMcpClient | None
 
     def close(self) -> None:
@@ -94,6 +132,7 @@ class ApplicationContainer:
 
         if self.mcp_client is not None:
             self.mcp_client.close()
+        _close_resource(self.conversation_store)
         _close_resource(self.memory_store)
         close = getattr(self.store, "close", None)
         if callable(close):
@@ -141,6 +180,7 @@ def build_application_container(
     store: TaskStore | None = None,
     long_task_store: LongTaskStore | None = None,
     memory_store: MemoryStore | None = None,
+    conversation_store: ConversationStore | None = None,
     tool_registry: ToolRegistry | None = None,
     config: ApplicationBootstrapConfig | None = None,
     environ: Mapping[str, str] | None = None,
@@ -157,6 +197,9 @@ def build_application_container(
         config=cfg,
         environ=environ,
     )
+    resolved_conversation_store = conversation_store or _build_conversation_store(
+        cfg
+    )
     try:
         resolved_planner = _resolve_planner(
             planner=planner,
@@ -164,17 +207,44 @@ def build_application_container(
             tools=services.tools,
         )
     except Exception:
+        _close_resource(resolved_conversation_store)
         services.close()
         raise
     orchestrator = AgentOrchestrator(
         planner=resolved_planner,
         runtime=services.runtime,
     )
+    conversation_policy = ConversationPolicy(
+        raw_retention_rounds=cfg.conversation_raw_retention_rounds,
+        target_recent_rounds=cfg.conversation_target_recent_rounds,
+        threshold_extra_rounds=cfg.conversation_threshold_extra_rounds,
+        max_recent_tokens=cfg.conversation_max_recent_tokens,
+        max_summary_tokens=cfg.conversation_max_summary_tokens,
+    )
+    conversation_model = response_model if response_model is not None else model
+    conversation_manager = ConversationManager(
+        resolved_conversation_store,
+        summarizer=(
+            ModelConversationSummarizer(
+                conversation_model,
+                max_summary_tokens=conversation_policy.max_summary_tokens,
+            )
+            if conversation_model is not None
+            else None
+        ),
+        policy=conversation_policy,
+    )
     general_agent = GeneralAgent(
         orchestrator=orchestrator,
         response_model=response_model if response_model is not None else model,
         intent_router=JsonIntentRouter(model) if model is not None else None,
         memory_manager=services.memory_manager,
+        conversation_manager=conversation_manager,
+        skill_selector=(
+            SkillSelector(services.facade.skill_loader)
+            if services.facade.skill_loader is not None
+            else None
+        ),
         allow_auto_task_execution=cfg.allow_auto_task_execution,
     )
     app = AgentApplication(orchestrator=orchestrator)
@@ -193,6 +263,8 @@ def build_application_container(
         progress_reader=services.progress_reader,
         memory_store=services.memory_store,
         memory_manager=services.memory_manager,
+        conversation_store=resolved_conversation_store,
+        conversation_manager=conversation_manager,
         mcp_client=services.mcp_client,
     )
 
@@ -219,15 +291,24 @@ def build_application_runtime(
             for file_tool in create_file_tools(cfg.workspace_dir):
                 tools.register(file_tool)
         skill_loader: FileSystemSkillLoader | None = None
-        if cfg.skill_import_dir is not None and cfg.skills_dir is not None:
+        if cfg.skills_dir is not None:
             skill_loader = FileSystemSkillLoader(cfg.skills_dir)
             skill_loader.load()
+        if cfg.skill_import_dir is not None and cfg.skills_dir is not None:
             installer = LocalSkillInstaller(
                 cfg.skill_import_dir,
                 cfg.skills_dir,
                 loader=skill_loader,
             )
             tools.register(InstallSkillTool(installer))
+        if cfg.allow_github_skill_install and cfg.skills_dir is not None:
+            environment = os.environ if environ is None else environ
+            github_installer = GitHubSkillInstaller(
+                cfg.skills_dir,
+                loader=skill_loader,
+                client=GitHubApiClient(token=environment.get("GITHUB_TOKEN")),
+            )
+            tools.register(InstallGitHubSkillTool(github_installer))
         if cfg.mcp_config_path is not None:
             mcp_client = LocalMcpClient(
                 load_mcp_config(cfg.mcp_config_path),
@@ -317,6 +398,19 @@ def _build_memory_store(config: ApplicationBootstrapConfig) -> MemoryStore:
     if config.sqlite_path is not None:
         return SqliteMemoryStore(config.sqlite_path)
     return InMemoryMemoryStore()
+
+
+def _build_conversation_store(
+    config: ApplicationBootstrapConfig,
+) -> ConversationStore:
+    if config.sqlite_path is not None:
+        return SqliteConversationStore(
+            config.sqlite_path,
+            raw_retention_rounds=config.conversation_raw_retention_rounds,
+        )
+    return InMemoryConversationStore(
+        raw_retention_rounds=config.conversation_raw_retention_rounds,
+    )
 
 
 def _close_resource(resource: object) -> None:

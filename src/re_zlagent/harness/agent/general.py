@@ -13,6 +13,10 @@ from re_zlagent.harness.context import (
     ContextManifestBuilder,
     ContextTrust,
 )
+from re_zlagent.harness.conversation import (
+    ConversationContext,
+    ConversationManager,
+)
 from re_zlagent.harness.memory import MemoryCaptureResult, MemoryManager
 from re_zlagent.harness.model import (
     ModelCallBudget,
@@ -24,6 +28,7 @@ from re_zlagent.harness.model import (
     normalize_token_usage,
 )
 from re_zlagent.harness.tasking import TaskRunStatus
+from re_zlagent.harness.skills import SkillSelector
 
 from .intent import IntentDecision, IntentRoute, IntentRouter
 from .orchestrator import AgentOrchestrator, AgentRunResult
@@ -102,6 +107,11 @@ class GeneralAgentResult:
         )
         if response_usage:
             phases["response"] = response_usage
+        conversation = self.response_metadata.get("conversation")
+        if isinstance(conversation, dict):
+            usage = normalize_token_usage(conversation.get("usage"))
+            if usage:
+                phases["compaction"] = usage
         return {
             "aggregate": aggregate_token_usage(*phases.values()),
             "phases": phases,
@@ -125,6 +135,8 @@ class GeneralAgent:
         response_model: ModelClient | None = None,
         intent_router: IntentRouter | None = None,
         memory_manager: MemoryManager | None = None,
+        conversation_manager: ConversationManager | None = None,
+        skill_selector: SkillSelector | None = None,
         allow_auto_task_execution: bool = False,
         max_context_chars: int = 6_000,
         max_tool_result_chars: int = 8_000,
@@ -144,6 +156,8 @@ class GeneralAgent:
         self._response_model = response_model
         self._intent_router = intent_router
         self._memory_manager = memory_manager
+        self._conversation_manager = conversation_manager
+        self._skill_selector = skill_selector
         self._allow_auto_task_execution = allow_auto_task_execution
         self._max_context_chars = max_context_chars
         self._context_builder = ContextManifestBuilder(
@@ -174,12 +188,45 @@ class GeneralAgent:
         requested_mode = GeneralAgentMode(mode)
         if requested_mode is GeneralAgentMode.CLARIFY:
             raise ValueError("clarify is a resolved mode, not a host request mode")
+        conversation_context: ConversationContext | None = None
+        conversation_load_error: str | None = None
+        if request.session_id is not None and self._conversation_manager is not None:
+            try:
+                conversation_context = await self._conversation_manager.prepare(
+                    request.session_id
+                )
+            except Exception as exc:  # noqa: BLE001 - session context is optional
+                conversation_load_error = type(exc).__name__
+        result = await self._run_once(
+            request,
+            requested_mode=requested_mode,
+            conversation_context=conversation_context,
+        )
+        return await self._record_conversation(
+            original_request=request,
+            result=result,
+            loaded_context=conversation_context,
+            load_error_type=conversation_load_error,
+        )
+
+    async def _run_once(
+        self,
+        request: AgentRunRequest,
+        *,
+        requested_mode: GeneralAgentMode,
+        conversation_context: ConversationContext | None,
+    ) -> GeneralAgentResult:
+        """Run the existing one-request flow with an optional context snapshot."""
+
         memory_capture = (
             self._memory_manager.capture_explicit(request.user_goal)
             if self._memory_manager is not None
             else None
         )
-        prepared_request, manifest = self._prepare_request(request)
+        prepared_request, manifest = self._prepare_request(
+            request,
+            conversation_context=conversation_context,
+        )
 
         if memory_capture is not None and memory_capture.triggered:
             if memory_capture.entry is None:
@@ -219,7 +266,9 @@ class GeneralAgent:
                 raise GeneralAgentUnavailableError(
                     "auto mode requires a configured intent router"
                 )
-            intent_decision = await self._intent_router.route(prepared_request)
+            intent_decision = await self._intent_router.route(
+                self._intent_request(prepared_request)
+            )
             if intent_decision.route is IntentRoute.CLARIFY:
                 return GeneralAgentResult(
                     request=prepared_request,
@@ -414,6 +463,8 @@ class GeneralAgent:
     def _prepare_request(
         self,
         request: AgentRunRequest,
+        *,
+        conversation_context: ConversationContext | None = None,
     ) -> tuple[AgentRunRequest, ContextManifest]:
         try:
             host_context = json.dumps(
@@ -430,8 +481,67 @@ class GeneralAgent:
             if self._memory_manager is not None
             else ""
         )
-        host_limit = max(256, (self._max_context_chars * 2) // 3)
-        memory_limit = max(0, self._max_context_chars - host_limit)
+        selections = (
+            self._skill_selector.select(request.user_goal)
+            if self._skill_selector is not None
+            else ()
+        )
+        skill_context = (
+            self._skill_selector.render_context(selections)
+            if self._skill_selector is not None
+            else ""
+        )
+        recent_conversation = (
+            conversation_context.render_recent()
+            if conversation_context is not None
+            else ""
+        )
+        conversation_summary = (
+            conversation_context.render_summary()
+            if conversation_context is not None
+            else ""
+        )
+        has_conversation = bool(recent_conversation or conversation_summary)
+        if has_conversation and selections:
+            host_limit = max(256, (self._max_context_chars * 20) // 100)
+            recent_limit = max(0, (self._max_context_chars * 40) // 100)
+            skill_limit = max(0, (self._max_context_chars * 20) // 100)
+            summary_limit = max(0, (self._max_context_chars * 12) // 100)
+            memory_limit = max(
+                0,
+                self._max_context_chars
+                - host_limit
+                - recent_limit
+                - skill_limit
+                - summary_limit,
+            )
+        elif has_conversation:
+            host_limit = max(256, (self._max_context_chars * 25) // 100)
+            recent_limit = max(0, (self._max_context_chars * 45) // 100)
+            skill_limit = 0
+            summary_limit = max(0, (self._max_context_chars * 15) // 100)
+            memory_limit = max(
+                0,
+                self._max_context_chars
+                - host_limit
+                - recent_limit
+                - summary_limit,
+            )
+        elif selections:
+            host_limit = max(256, self._max_context_chars // 2)
+            recent_limit = 0
+            skill_limit = max(0, (self._max_context_chars * 35) // 100)
+            summary_limit = 0
+            memory_limit = max(
+                0,
+                self._max_context_chars - host_limit - skill_limit,
+            )
+        else:
+            host_limit = max(256, (self._max_context_chars * 2) // 3)
+            recent_limit = 0
+            skill_limit = 0
+            summary_limit = 0
+            memory_limit = max(0, self._max_context_chars - host_limit)
         manifest = self._context_builder.build(
             (
                 ContextInput(
@@ -440,6 +550,43 @@ class GeneralAgent:
                     trust=ContextTrust.UNTRUSTED,
                     content=host_context,
                     max_chars=host_limit,
+                ),
+                ContextInput(
+                    id="recent_conversation",
+                    source="conversation_store",
+                    trust=ContextTrust.UNTRUSTED,
+                    content=recent_conversation,
+                    max_chars=recent_limit,
+                    metadata=(
+                        conversation_context.metadata_dict()
+                        if conversation_context is not None
+                        else {}
+                    ),
+                ),
+                ContextInput(
+                    id="selected_skills",
+                    source="skill_store",
+                    trust=ContextTrust.RECALLED_BACKGROUND,
+                    content=skill_context,
+                    max_chars=skill_limit,
+                    metadata={
+                        "selection_policy": "metadata_overlap_v1",
+                        "selected": [
+                            item.metadata_dict() for item in selections
+                        ],
+                    },
+                ),
+                ContextInput(
+                    id="conversation_summary",
+                    source="conversation_compaction",
+                    trust=ContextTrust.RECALLED_BACKGROUND,
+                    content=conversation_summary,
+                    max_chars=summary_limit,
+                    metadata=(
+                        conversation_context.metadata_dict()
+                        if conversation_context is not None
+                        else {}
+                    ),
                 ),
                 ContextInput(
                     id="recalled_memory",
@@ -457,9 +604,77 @@ class GeneralAgent:
         enriched_context = {
             "context_manifest": manifest.to_dict(),
             "request_context": segment_content.get("request_context", ""),
+            "recent_conversation": segment_content.get(
+                "recent_conversation",
+                "",
+            ),
+            "selected_skills": segment_content.get("selected_skills", ""),
+            "conversation_summary": segment_content.get(
+                "conversation_summary",
+                "",
+            ),
             "recalled_memory": segment_content.get("recalled_memory", ""),
         }
         return replace(request, context=enriched_context), manifest
+
+    @staticmethod
+    def _intent_request(request: AgentRunRequest) -> AgentRunRequest:
+        """Keep Skill instructions out of the intent-classification phase."""
+
+        context = dict(request.context)
+        context["selected_skills"] = ""
+        return replace(request, context=context)
+
+    async def _record_conversation(
+        self,
+        *,
+        original_request: AgentRunRequest,
+        result: GeneralAgentResult,
+        loaded_context: ConversationContext | None,
+        load_error_type: str | None,
+    ) -> GeneralAgentResult:
+        """Record presentation history without affecting task acceptance."""
+
+        session_id = original_request.session_id
+        if session_id is None:
+            return result
+        metadata = dict(result.response_metadata)
+        conversation_metadata: dict[str, Any] = {"session_id": session_id}
+        if loaded_context is not None:
+            conversation_metadata["loaded_context"] = (
+                loaded_context.metadata_dict()
+            )
+        if load_error_type is not None:
+            conversation_metadata["load_error_type"] = load_error_type
+        if self._conversation_manager is None:
+            conversation_metadata.update(
+                {
+                    "recorded": False,
+                    "record_error_type": "ConversationManagerUnavailable",
+                }
+            )
+        else:
+            try:
+                update = await self._conversation_manager.record_turn(
+                    session_id,
+                    original_request.user_goal,
+                    result.response,
+                    metadata={
+                        "run_id": original_request.run_id,
+                        "mode": result.mode.value,
+                        "verified": result.verified,
+                    },
+                )
+                conversation_metadata.update(update.metadata_dict())
+            except Exception as exc:  # noqa: BLE001 - keep the completed response
+                conversation_metadata.update(
+                    {
+                        "recorded": False,
+                        "record_error_type": type(exc).__name__,
+                    }
+                )
+        metadata["conversation"] = conversation_metadata
+        return replace(result, response_metadata=metadata)
 
     def _task_response_payload(self, result: AgentRunResult) -> str:
         runtime_result = result.runtime_result

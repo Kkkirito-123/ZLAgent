@@ -40,6 +40,7 @@ class CheckCommandTests(unittest.TestCase):
                 "cli-help",
                 "benchmark-help",
                 "intent-eval-help",
+                "effectiveness-benchmark-help",
                 "package-dry-run",
             ],
         )
@@ -54,6 +55,7 @@ class CheckCommandTests(unittest.TestCase):
                 "cli-help",
                 "benchmark-help",
                 "intent-eval-help",
+                "effectiveness-benchmark-help",
             ],
         )
 
@@ -97,9 +99,10 @@ class CheckCommandTests(unittest.TestCase):
                 "cli-help",
                 "benchmark-help",
                 "intent-eval-help",
+                "effectiveness-benchmark-help",
             ],
         )
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 9)
         for _, call_root, pythonpath in calls:
             self.assertEqual(call_root, root)
             self.assertEqual(pythonpath.split(os.pathsep)[0], str(root / "src"))

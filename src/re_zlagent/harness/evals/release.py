@@ -15,6 +15,7 @@ from re_zlagent.harness.runtime import (
     HarnessRuntime,
     InjectedOutboxCrash,
     OutboxFaultPoint,
+    RunControlService,
     RuntimeToolStep,
     WorkerTickStatus,
 )
@@ -83,6 +84,9 @@ class BenchmarkCaseResult:
     status: TaskRunStatus | None = None
     recovered: bool | None = None
     metrics: dict[str, MetricValue] = field(default_factory=dict)
+    expected_accepted: bool | None = None
+    expected_status: TaskRunStatus | None = None
+    expected_recovered: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "failures", tuple(self.failures))
@@ -101,6 +105,15 @@ class BenchmarkCaseResult:
             "status": self.status.value if self.status is not None else None,
             "recovered": self.recovered,
             "metrics": dict(self.metrics),
+            "expected": {
+                "accepted": self.expected_accepted,
+                "status": (
+                    self.expected_status.value
+                    if self.expected_status is not None
+                    else None
+                ),
+                "recovered": self.expected_recovered,
+            },
         }
 
 
@@ -133,6 +146,77 @@ class ReleaseBenchmarkReport:
     @property
     def abandoned_runs(self) -> int:
         return self._metric_total("abandoned_runs")
+
+    @property
+    def completion_eligible(self) -> int:
+        return sum(
+            result.expected_accepted is True
+            and result.expected_status is TaskRunStatus.COMPLETED
+            for result in self.results
+        )
+
+    @property
+    def completed_tasks(self) -> int:
+        return sum(
+            result.passed
+            and result.expected_accepted is True
+            and result.expected_status is TaskRunStatus.COMPLETED
+            and result.accepted is True
+            and result.status is TaskRunStatus.COMPLETED
+            for result in self.results
+        )
+
+    @property
+    def task_completion_rate(self) -> float:
+        if self.completion_eligible == 0:
+            return 0.0
+        return self.completed_tasks / self.completion_eligible
+
+    @property
+    def long_task_completion_eligible(self) -> int:
+        return sum(
+            result.suite == "long_task"
+            and result.expected_accepted is True
+            and result.expected_status is TaskRunStatus.COMPLETED
+            for result in self.results
+        )
+
+    @property
+    def completed_long_tasks(self) -> int:
+        return sum(
+            result.suite == "long_task"
+            and result.passed
+            and result.expected_accepted is True
+            and result.expected_status is TaskRunStatus.COMPLETED
+            and result.accepted is True
+            and result.status is TaskRunStatus.COMPLETED
+            for result in self.results
+        )
+
+    @property
+    def long_task_completion_rate(self) -> float:
+        if self.long_task_completion_eligible == 0:
+            return 0.0
+        return self.completed_long_tasks / self.long_task_completion_eligible
+
+    @property
+    def recovery_eligible(self) -> int:
+        return sum(result.expected_recovered is True for result in self.results)
+
+    @property
+    def recovered_tasks(self) -> int:
+        return sum(
+            result.passed
+            and result.expected_recovered is True
+            and result.recovered is True
+            for result in self.results
+        )
+
+    @property
+    def recovery_success_rate(self) -> float:
+        if self.recovery_eligible == 0:
+            return 0.0
+        return self.recovered_tasks / self.recovery_eligible
 
     @property
     def violations(self) -> tuple[str, ...]:
@@ -190,6 +274,15 @@ class ReleaseBenchmarkReport:
                 "false_completions": self.false_completions,
                 "duplicate_side_effects": self.duplicate_side_effects,
                 "abandoned_runs": self.abandoned_runs,
+                "completion_eligible": self.completion_eligible,
+                "completed_tasks": self.completed_tasks,
+                "task_completion_rate": self.task_completion_rate,
+                "long_task_completion_eligible": (self.long_task_completion_eligible),
+                "completed_long_tasks": self.completed_long_tasks,
+                "long_task_completion_rate": self.long_task_completion_rate,
+                "recovery_eligible": self.recovery_eligible,
+                "recovered_tasks": self.recovered_tasks,
+                "recovery_success_rate": self.recovery_success_rate,
             },
             "violations": list(self.violations),
             "results": [result.to_dict() for result in self.results],
@@ -220,6 +313,16 @@ class ReleaseBenchmarkRunner:
             BenchmarkKind.OUTBOX_CRASH_REPLAY: self._outbox_crash_replay,
             BenchmarkKind.SQLITE_APPROVAL_RESTART: self._sqlite_approval_restart,
             BenchmarkKind.EXPIRED_LEASE_RECLAIM: self._expired_lease_reclaim,
+            BenchmarkKind.MULTI_RETRY_CONTINUATION: (self._multi_retry_continuation),
+            BenchmarkKind.SQLITE_FRONTIER_RESTART: (self._sqlite_frontier_restart),
+            BenchmarkKind.ALTERNATIVE_TOOL_CONTINUATION: (
+                self._alternative_tool_continuation
+            ),
+            BenchmarkKind.MIDDLE_APPROVAL_CONTINUATION: (
+                self._middle_approval_continuation
+            ),
+            BenchmarkKind.RETRY_BUDGET_DEAD_LETTER: (self._retry_budget_dead_letter),
+            BenchmarkKind.COOPERATIVE_CANCEL: self._cooperative_cancel,
         }
 
     async def run(self) -> ReleaseBenchmarkReport:
@@ -233,6 +336,13 @@ class ReleaseBenchmarkRunner:
             results=tuple(results),
             duration_ms=(perf_counter() - started) * 1000,
         )
+
+    async def run_case(self, case: BenchmarkCase) -> BenchmarkCaseResult:
+        """Run one validated release case for a higher-level eval adapter."""
+
+        if case not in self._corpus.cases:
+            raise ValueError("release benchmark case does not belong to this corpus")
+        return await self._run_case(case)
 
     async def _run_case(self, case: BenchmarkCase) -> BenchmarkCaseResult:
         started = perf_counter()
@@ -248,6 +358,9 @@ class ReleaseBenchmarkRunner:
                 passed=False,
                 duration_ms=duration_ms,
                 failures=(f"executor raised {type(exc).__name__}: {exc}",),
+                expected_accepted=case.expected.accepted,
+                expected_status=case.expected.status,
+                expected_recovered=case.expected.recovered,
             )
         duration_ms = (perf_counter() - started) * 1000
         failures = _compare_observation(case, observation, duration_ms)
@@ -263,6 +376,9 @@ class ReleaseBenchmarkRunner:
             status=observation.status,
             recovered=observation.recovered,
             metrics=observation.metrics,
+            expected_accepted=case.expected.accepted,
+            expected_status=case.expected.status,
+            expected_recovered=case.expected.recovered,
         )
 
     async def _verified_success(self) -> BenchmarkObservation:
@@ -575,6 +691,340 @@ class ReleaseBenchmarkRunner:
             },
         )
 
+    async def _multi_retry_continuation(self) -> BenchmarkObservation:
+        refs = tuple(f"benchmark:multi-{index}" for index in range(1, 6))
+        tool = _BenchmarkEvidenceTool(fail_once={refs[1], refs[3]})
+        runtime = _runtime_with_tools(tool)
+        steps = _evidence_steps(refs)
+        first = await runtime.run(
+            contract=_evidence_contract(
+                "benchmark-multi-retry",
+                "recover two transient failures and finish every step",
+                (refs[-1],),
+            ),
+            run_id="benchmark-multi-retry",
+            steps=steps,
+        )
+        second = await runtime.resume_from_checkpoint(run_id="benchmark-multi-retry")
+        final = await runtime.resume_from_checkpoint(run_id="benchmark-multi-retry")
+        prefix_replays = sum(
+            max(0, tool.calls.get(ref, 0) - expected)
+            for ref, expected in zip(refs, (1, 2, 1, 2, 1), strict=True)
+        )
+        return BenchmarkObservation(
+            accepted=final.accepted,
+            status=final.run.status,
+            recovered=(
+                first.run.status is TaskRunStatus.RECOVERING
+                and second.run.status is TaskRunStatus.RECOVERING
+            ),
+            metrics={
+                "recovery_cycles": 2,
+                "completed_prefix_replays": prefix_replays,
+                "tool_calls": sum(tool.calls.values()),
+                "verified_steps": sum(
+                    verification.passed for verification in final.step_verifications
+                ),
+            },
+        )
+
+    async def _sqlite_frontier_restart(self) -> BenchmarkObservation:
+        refs = tuple(f"benchmark:restart-{index}" for index in range(1, 6))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "frontier.sqlite"
+            first_store = SqliteTaskStore(database)
+            first_tool = _BenchmarkEvidenceTool(fail_once={refs[2]})
+            first_registry = ToolRegistry()
+            first_registry.register(first_tool)
+            first_runtime = HarnessRuntime(
+                store=first_store,
+                tools=first_registry,
+            )
+            first = await first_runtime.run(
+                contract=_evidence_contract(
+                    "benchmark-frontier-restart",
+                    "resume the durable unfinished frontier",
+                    (refs[-1],),
+                ),
+                run_id="benchmark-frontier-restart",
+                steps=_evidence_steps(refs),
+            )
+            persisted = first_store.get_run("benchmark-frontier-restart")
+            plan_id = persisted.plan_id if persisted is not None else None
+            first_store.close()
+
+            reopened = SqliteTaskStore(database)
+            resumed_tool = _BenchmarkEvidenceTool()
+            resumed_registry = ToolRegistry()
+            resumed_registry.register(resumed_tool)
+            resumed_runtime = HarnessRuntime(
+                store=reopened,
+                tools=resumed_registry,
+            )
+            resumed = await resumed_runtime.resume_from_checkpoint(
+                run_id="benchmark-frontier-restart"
+            )
+            persisted_plan = reopened.get_plan(plan_id) if plan_id else None
+            reopened.close()
+        prefix_replays = sum(resumed_tool.calls.get(ref, 0) for ref in refs[:2])
+        return BenchmarkObservation(
+            accepted=resumed.accepted,
+            status=resumed.run.status,
+            recovered=first.run.status is TaskRunStatus.RECOVERING,
+            metrics={
+                "completed_prefix_replays": prefix_replays,
+                "remaining_steps_executed": sum(resumed_tool.calls.values()),
+                "persisted_plan_restored": persisted_plan is not None,
+                "first_process_completed_steps": sum(
+                    first_tool.calls.get(ref, 0) for ref in refs[:2]
+                ),
+            },
+        )
+
+    async def _alternative_tool_continuation(self) -> BenchmarkObservation:
+        evidence = _BenchmarkEvidenceTool()
+        primary = _BenchmarkAlternativeTool()
+        runtime = _runtime_with_tools(evidence, primary)
+        refs = (
+            "benchmark:alternative-1",
+            "benchmark:alternative-2",
+            "benchmark:alternative-3",
+        )
+        steps = (
+            RuntimeToolStep(
+                id="step-1",
+                tool_name=evidence.name,
+                arguments={"ref": refs[0]},
+                required_evidence_refs=(refs[0],),
+            ),
+            RuntimeToolStep(
+                id="step-2",
+                tool_name=primary.name,
+                depends_on=("step-1",),
+                required_evidence_refs=(refs[1],),
+            ),
+            RuntimeToolStep(
+                id="step-3",
+                tool_name=evidence.name,
+                arguments={"ref": refs[2]},
+                depends_on=("step-2",),
+                required_evidence_refs=(refs[2],),
+            ),
+        )
+        first = await runtime.run(
+            contract=_evidence_contract(
+                "benchmark-alternative",
+                "replace one unavailable capability and continue",
+                (refs[-1],),
+            ),
+            run_id="benchmark-alternative",
+            steps=steps,
+        )
+        resumed = await runtime.resume_with_alternative_tool(
+            run_id="benchmark-alternative",
+            alternative_step=RuntimeToolStep(
+                id="replacement-proposal",
+                tool_name=evidence.name,
+                arguments={"ref": refs[1]},
+            ),
+        )
+        alternative_events = [
+            event
+            for event in resumed.events
+            if event.type.value == "tool_result_recorded"
+            and "alternative" in event.payload
+        ]
+        original_identity = bool(
+            alternative_events
+            and alternative_events[-1].payload.get("step_id") == "step-2"
+        )
+        return BenchmarkObservation(
+            accepted=resumed.accepted,
+            status=resumed.run.status,
+            recovered=first.run.status is TaskRunStatus.RECOVERING,
+            metrics={
+                "primary_failures": primary.calls,
+                "completed_prefix_replays": max(0, evidence.calls.get(refs[0], 0) - 1),
+                "original_step_identity_preserved": original_identity,
+                "verified_steps": sum(
+                    verification.passed for verification in resumed.step_verifications
+                ),
+            },
+        )
+
+    async def _middle_approval_continuation(self) -> BenchmarkObservation:
+        evidence = _BenchmarkEvidenceTool()
+        confirmation = _BenchmarkConfirmTool()
+        registry = ToolRegistry()
+        registry.register(evidence)
+        registry.register(confirmation)
+        task_store = InMemoryTaskStore()
+        long_task_store = InMemoryLongTaskStore()
+        runtime = HarnessRuntime(
+            store=task_store,
+            tools=registry,
+            long_task_store=long_task_store,
+        )
+        refs = (
+            "benchmark:approval-1",
+            "benchmark:approval-2",
+            "benchmark:approval-3",
+            "benchmark:approval-4",
+            "benchmark:approval-5",
+        )
+        steps = list(_evidence_steps(refs))
+        steps[1] = RuntimeToolStep(
+            id="step-2",
+            tool_name=confirmation.name,
+            arguments={"ref": refs[1]},
+            depends_on=("step-1",),
+            required_evidence_refs=(refs[1],),
+        )
+        first = await runtime.run(
+            contract=_evidence_contract(
+                "benchmark-middle-approval",
+                "approve a middle mutation and finish remaining steps",
+                (refs[-1],),
+            ),
+            run_id="benchmark-middle-approval",
+            steps=tuple(steps),
+        )
+        interactions = long_task_store.list_pending_interactions(
+            "benchmark-middle-approval",
+            status=InteractionStatus.OPEN,
+        )
+        resumed = await runtime.resume_with_user_approval(
+            run_id="benchmark-middle-approval",
+            feedback="approved for benchmark",
+        )
+        open_after = long_task_store.list_pending_interactions(
+            "benchmark-middle-approval",
+            status=InteractionStatus.OPEN,
+        )
+        return BenchmarkObservation(
+            accepted=resumed.accepted,
+            status=resumed.run.status,
+            recovered=first.run.status is TaskRunStatus.WAITING_USER,
+            metrics={
+                "approval_interactions": len(interactions),
+                "open_interactions": len(open_after),
+                "completed_prefix_replays": max(0, evidence.calls.get(refs[0], 0) - 1),
+                "remaining_steps_executed": sum(
+                    evidence.calls.get(ref, 0) for ref in refs[2:]
+                ),
+            },
+        )
+
+    async def _retry_budget_dead_letter(self) -> BenchmarkObservation:
+        store = InMemoryTaskStore()
+        retrying = _BenchmarkAlwaysRetryTool()
+        registry = ToolRegistry()
+        registry.register(retrying)
+        runtime = HarnessRuntime(store=store, tools=registry)
+        first = await runtime.run(
+            contract=_evidence_contract(
+                "benchmark-dead-letter",
+                "stop bounded retries for an unavailable capability",
+                ("benchmark:never",),
+            ),
+            run_id="benchmark-dead-letter",
+            steps=(
+                RuntimeToolStep(
+                    id="step-1",
+                    tool_name=retrying.name,
+                    required_evidence_refs=("benchmark:never",),
+                ),
+            ),
+        )
+        clock = _BenchmarkClock()
+        worker = DurableWorker(
+            worker_id="benchmark-dead-letter-worker",
+            store=store,
+            runtime=runtime,
+            retry_budget=2,
+            base_backoff_seconds=1,
+            clock=clock,
+        )
+        first_tick = await worker.run_once("benchmark-dead-letter")
+        clock.advance(1)
+        second_tick = await worker.run_once("benchmark-dead-letter")
+        final_run = store.get_run("benchmark-dead-letter")
+        lease = store.get_run_lease("benchmark-dead-letter")
+        if final_run is None or lease is None:
+            raise RuntimeError("dead-letter benchmark lost durable state")
+        return BenchmarkObservation(
+            accepted=False,
+            status=final_run.status,
+            recovered=False,
+            metrics={
+                "initially_recoverable": (first.run.status is TaskRunStatus.RECOVERING),
+                "retry_scheduled": (
+                    first_tick.status is WorkerTickStatus.RETRY_SCHEDULED
+                ),
+                "dead_lettered": (
+                    second_tick.status is WorkerTickStatus.DEAD_LETTER
+                    and lease.state is RunLeaseState.DEAD_LETTER
+                ),
+                "retry_attempts": lease.attempt_count,
+                "false_completions": int(final_run.status is TaskRunStatus.COMPLETED),
+                "abandoned_runs": 0,
+            },
+        )
+
+    async def _cooperative_cancel(self) -> BenchmarkObservation:
+        store = InMemoryTaskStore()
+        controls = RunControlService(store)
+        remaining = _BenchmarkEvidenceTool()
+        cancelling = _BenchmarkCancelTool(
+            controls,
+            run_id="benchmark-cancel",
+        )
+        registry = ToolRegistry()
+        registry.register(cancelling)
+        registry.register(remaining)
+        runtime = HarnessRuntime(store=store, tools=registry)
+        runtime.submit(
+            contract=_evidence_contract(
+                "benchmark-cancel",
+                "stop a long task before its next step",
+                ("benchmark:cancel-final",),
+            ),
+            run_id="benchmark-cancel",
+            steps=(
+                RuntimeToolStep(
+                    id="step-1",
+                    tool_name=cancelling.name,
+                    required_evidence_refs=("benchmark:cancelled-step",),
+                ),
+                RuntimeToolStep(
+                    id="step-2",
+                    tool_name=remaining.name,
+                    arguments={"ref": "benchmark:cancel-final"},
+                    depends_on=("step-1",),
+                ),
+            ),
+        )
+        tick = await DurableWorker(
+            worker_id="benchmark-cancel-worker",
+            store=store,
+            runtime=runtime,
+        ).run_once("benchmark-cancel")
+        final_run = store.get_run("benchmark-cancel")
+        checkpoint = store.latest_checkpoint("benchmark-cancel")
+        if final_run is None or checkpoint is None:
+            raise RuntimeError("cancel benchmark lost durable state")
+        return BenchmarkObservation(
+            accepted=False,
+            status=final_run.status,
+            recovered=False,
+            metrics={
+                "worker_parked": tick.status is WorkerTickStatus.PARKED,
+                "remaining_tool_calls": sum(remaining.calls.values()),
+                "cancel_checkpoint": checkpoint.status.value == "cancelled",
+                "false_completions": int(final_run.status is TaskRunStatus.COMPLETED),
+            },
+        )
+
 
 class _BenchmarkEvidenceTool(Tool):
     name = "benchmark_evidence"
@@ -608,6 +1058,96 @@ class _BenchmarkEvidenceTool(Tool):
             evidence=[Evidence(type="benchmark", ref=ref)],
             source=self.name,
         )
+
+
+class _BenchmarkAlternativeTool(Tool):
+    name = "benchmark_alternative_required"
+    description = "Fail with an explicit alternative-tool recovery action."
+    permission = ToolPermission.SAFE
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        del arguments
+        self.calls += 1
+        return ToolResult.failure(
+            "primary benchmark capability unavailable",
+            error_type=ToolErrorType.EXTERNAL_UNAVAILABLE,
+            recoverable_by_model=True,
+            recommended_next_action=RecommendedNextAction.USE_ALTERNATIVE_TOOL,
+            source=self.name,
+        )
+
+
+class _BenchmarkConfirmTool(Tool):
+    name = "benchmark_confirm"
+    description = "Return benchmark evidence only after Runtime confirmation."
+    permission = ToolPermission.CONFIRM
+    is_read_only = False
+    input_schema = {
+        "type": "object",
+        "properties": {"ref": {"type": "string"}},
+        "required": ["ref"],
+    }
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        ref = str(arguments["ref"])
+        return ToolResult.success(
+            "confirmed benchmark action",
+            evidence=[Evidence(type="benchmark", ref=ref)],
+            source=self.name,
+        )
+
+
+class _BenchmarkAlwaysRetryTool(Tool):
+    name = "benchmark_always_retry"
+    description = "Always return an explicit transient failure."
+    permission = ToolPermission.SAFE
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        del arguments
+        return ToolResult.failure(
+            "benchmark dependency remains unavailable",
+            error_type=ToolErrorType.EXTERNAL_UNAVAILABLE,
+            recoverable_by_model=True,
+            recommended_next_action=RecommendedNextAction.RETRY,
+            source=self.name,
+        )
+
+
+class _BenchmarkCancelTool(Tool):
+    name = "benchmark_cancel_during_execute"
+    description = "Cancel the current run at a cooperative step boundary."
+    permission = ToolPermission.SAFE
+
+    def __init__(self, controls: RunControlService, *, run_id: str) -> None:
+        self._controls = controls
+        self._run_id = run_id
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        del arguments
+        self._controls.cancel(
+            self._run_id,
+            reason="benchmark cooperative cancellation",
+            actor="benchmark",
+        )
+        return ToolResult.success(
+            "cancelled at cooperative boundary",
+            evidence=[Evidence(type="benchmark", ref="benchmark:cancelled-step")],
+            source=self.name,
+        )
+
+
+class _BenchmarkClock:
+    def __init__(self) -> None:
+        self._now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self._now
+
+    def advance(self, seconds: int) -> None:
+        self._now += timedelta(seconds=seconds)
 
 
 class _DeduplicatingExternalAdapter:
@@ -711,6 +1251,19 @@ def _evidence_contract(
                 evidence_refs=refs,
             ),
         ),
+    )
+
+
+def _evidence_steps(refs: tuple[str, ...]) -> tuple[RuntimeToolStep, ...]:
+    return tuple(
+        RuntimeToolStep(
+            id=f"step-{index}",
+            tool_name="benchmark_evidence",
+            arguments={"ref": ref},
+            depends_on=(() if index == 1 else (f"step-{index - 1}",)),
+            required_evidence_refs=(ref,),
+        )
+        for index, ref in enumerate(refs, start=1)
     )
 
 

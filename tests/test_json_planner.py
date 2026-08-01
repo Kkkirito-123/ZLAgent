@@ -42,6 +42,17 @@ class SequenceModel:
         return ModelResponse(content=self._contents.pop(0))
 
 
+class UsageSequenceModel:
+    def __init__(self, *responses: ModelResponse) -> None:
+        self._responses = list(responses)
+
+    async def complete(self, messages: tuple[ModelMessage, ...]) -> ModelResponse:
+        del messages
+        if not self._responses:
+            raise AssertionError("planner exceeded the supplied model responses")
+        return self._responses.pop(0)
+
+
 def _plan_json(**overrides) -> str:
     data = {
         "contract": {
@@ -139,6 +150,109 @@ class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("$.path", model.calls[1][-1].content)
 
+    async def test_planner_aggregates_usage_across_repair_attempts(self) -> None:
+        invalid = json.loads(_plan_json())
+        invalid["steps"][0]["arguments"] = {"path": 3}
+        model = UsageSequenceModel(
+            ModelResponse(
+                content=json.dumps(invalid),
+                raw={
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                    }
+                },
+            ),
+            ModelResponse(
+                content=_plan_json(),
+                raw={
+                    "usage": {
+                        "prompt_tokens": 20,
+                        "completion_tokens": 8,
+                        "total_tokens": 28,
+                    }
+                },
+            ),
+        )
+        planner = JsonPlanPlanner(
+            model,
+            tool_schemas=[
+                {
+                    "name": "read_file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                }
+            ],
+        )
+
+        plan = await planner.plan(
+            AgentRunRequest(run_id="run-usage", user_goal="ship plan")
+        )
+
+        self.assertEqual(
+            plan.metadata["usage"],
+            {"input_tokens": 30, "output_tokens": 13, "total_tokens": 43},
+        )
+
+    async def test_planner_repairs_missing_host_required_evidence_refs(self) -> None:
+        incomplete = json.loads(_plan_json())
+        incomplete["contract"]["acceptance_criteria"][0]["evidence_refs"] = [
+            "tool:first"
+        ]
+        complete = json.loads(_plan_json())
+        complete["contract"]["acceptance_criteria"][0]["evidence_refs"] = [
+            "tool:first",
+            "tool:second",
+        ]
+        model = SequenceModel(json.dumps(incomplete), json.dumps(complete))
+        planner = JsonPlanPlanner(
+            model,
+            tool_schemas=[
+                {
+                    "name": "read_file",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+            required_evidence_refs=("tool:first", "tool:second"),
+        )
+
+        plan = await planner.plan(
+            AgentRunRequest(run_id="run-required-refs", user_goal="ship plan")
+        )
+
+        self.assertEqual(plan.metadata["repair_attempts"], 1)
+        self.assertEqual(
+            plan.contract.acceptance_criteria[0].evidence_refs,
+            ("tool:first", "tool:second"),
+        )
+
+    async def test_planner_rejects_empty_required_tool_evidence(self) -> None:
+        invalid = json.loads(_plan_json())
+        invalid["contract"]["acceptance_criteria"][0]["evidence_refs"] = []
+        planner = JsonPlanPlanner(
+            FakeModel(json.dumps(invalid)),
+            max_repair_attempts=0,
+        )
+
+        with self.assertRaisesRegex(PlanParseError, "must include evidence_refs"):
+            await planner.plan(
+                AgentRunRequest(run_id="run-empty-evidence", user_goal="ship plan")
+            )
+
+    def test_parser_reports_exact_invalid_array_field(self) -> None:
+        invalid = json.loads(_plan_json())
+        invalid["contract"]["stakeholders"] = "owner"
+
+        with self.assertRaisesRegex(
+            PlanParseError,
+            "contract.stakeholders must be an array of strings",
+        ):
+            parse_agent_plan(json.dumps(invalid), fallback_goal="ship plan")
+
     async def test_planner_stops_after_bounded_repair_attempt(self) -> None:
         invalid = json.loads(_plan_json())
         invalid["steps"][0]["arguments"] = {}
@@ -160,9 +274,7 @@ class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(PlanParseError, "required property"):
-            await planner.plan(
-                AgentRunRequest(run_id="run-1", user_goal="ship plan")
-            )
+            await planner.plan(AgentRunRequest(run_id="run-1", user_goal="ship plan"))
 
         self.assertEqual(len(model.calls), 2)
 
@@ -187,9 +299,7 @@ class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(PlanParseError, "identical tool action"):
-            await planner.plan(
-                AgentRunRequest(run_id="run-1", user_goal="ship plan")
-            )
+            await planner.plan(AgentRunRequest(run_id="run-1", user_goal="ship plan"))
 
     async def test_planner_rejects_plan_above_step_limit(self) -> None:
         oversized = json.loads(_plan_json())
@@ -213,9 +323,7 @@ class JsonPlannerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(PlanParseError, "maximum is 1"):
-            await planner.plan(
-                AgentRunRequest(run_id="run-1", user_goal="ship plan")
-            )
+            await planner.plan(AgentRunRequest(run_id="run-1", user_goal="ship plan"))
 
     async def test_planner_rejects_tool_outside_host_schema(self) -> None:
         model = FakeModel(_plan_json())
